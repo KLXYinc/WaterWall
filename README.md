@@ -1,81 +1,65 @@
 # WaterWall
 
-A Rust GUI project using **Dear ImGui** through the [`imgui`](https://crates.io/crates/imgui) bindings (`imgui-rs`) — with an immediate-mode **node editor** featuring sagging, physical verlet-simulated ropes.
+Visual Linux firewall, per-application network inspector, and interactive node-graph traffic router built with **Rust** and a custom **Dear ImGui** engine.
 
-Copied and adapted from the Dear ImGui setup in `AudioMixer`.
+![Node Graph Flow](assets/node-graph-flow.png)
 
----
-
-## Architecture & Layout
-
-All GUI-related modules are organized cleanly inside `src/gui/` and re-exported at the root of `src/`:
-
-```
-WaterWall/
-├── Cargo.toml                    # Package manifest & vendored crate patches
-├── .gitignore                    # Build artifacts & imgui.ini ignore rules
-├── imgui/                        # Dear ImGui C++ fork with custom node graph module
-├── vendor/
-│   ├── imgui/                    # Vendored Rust imgui crate
-│   └── imgui-sys/                # Vendored Rust imgui-sys crate (FFI bindings)
-└── src/
-    ├── main.rs                   # Winit event loop & application handler
-    ├── graphics.rs               # (re-export) OpenGL, Winit & ImGui renderer
-    ├── theme.rs                  # (re-export) Theme colors & styling
-    ├── app.rs                    # (re-export) Main application shell
-    ├── nodes.rs                  # (re-export) Node & Pin definitions
-    ├── graph.rs                  # (re-export) Graph model & link management
-    └── gui/
-        ├── mod.rs                # GUI module bundle
-        ├── graphics.rs           # Window creation (Winit), OpenGL context (Glutin/Glow), ImGui AutoRenderer
-        ├── theme.rs              # Palette, pin colors, backdrop and window background
-        ├── app.rs                # Application window layout and state
-        ├── canvas.rs             # Node graph canvas rendering and interaction
-        ├── toolbar.rs            # Top bar actions (+ Add, Reset, Quit)
-        ├── graph/
-        │   └── mod.rs            # Graph model, link declarations, event handling
-        └── nodes/
-            ├── mod.rs            # NodeKind enum, categories, default items
-            ├── node.rs           # Node structure, widgets layout & rendering
-            ├── pin.rs            # Pin and Link structures
-            └── item.rs           # Sliders, checkboxes, pins, waveform plots
-```
-
----
+<p align="center">
+  <img src="assets/isometric-tilt-view.png" width="49%" alt="3D Isometric Tilt View" />
+  <img src="assets/world-map-egress.png" width="49%" alt="Global WAN Egress Map" />
+</p>
 
 ## Features
 
-- **Windowing & Rendering Backend**:
-  - `winit` 0.30 (X11 & Wayland support)
-  - `glutin` 0.32 + `glow` 0.14 for OpenGL context management
-  - `imgui-winit-support` + `imgui-glow-renderer`
-  - High-DPI auto-scaling
-- **Dear ImGui Node Engine**:
-  - Immediate-mode node graph layout (`imgui::node_graph`)
-  - Verlet-integrated rope connections with gravity, sagging, and lateral flutter
-  - Catmull-Rom smoothed spline rendering with drop shadows
-  - Interactive link dragging, pin snapping, connection drops on node bodies
-  - Blender-style right-click drag cutting line
-  - Dropped / cut ropes tumble and fall off canvas under physics
-  - Middle-mouse canvas panning
-  - Right-click canvas popup menu to spawn new nodes
+- **5 Integrated Views**:
+  - **`[1] Usage`** — Traffic doughnut, country breakdown, grouped apps with native icons, hosts/ASN lookup, protocol badges, and timeline scrubber.
+  - **`[2] Traffic Monitor`** — Multi-app real-time bandwidth waveforms and throughput breakdown.
+  - **`[3] App Connections`** — Live socket inspector with 1-click **Allow / Block / Proxy / Send to Flow Graph** controls.
+  - **`[4] Flow Graph`** — Verlet physics node editor with inline node-on-rope splicing, 3D isometric tilt, and an interactive Global WAN Egress Map.
+  - **`[5] DNS & Alerts`** — Live reverse-DNS log and security anomaly alerts.
+- **Graph Nodes**: `AppGroup` (WAN/LAN sources), `TrafficMonitor` (multi-mode inline probe), `FilterNode` (port/host rules), `BlockNode` (socket kill-switch), `VpnNode` (WireGuard/TUN), `ProxyNode` (SOCKS5/HTTP CONNECT), `RateLimiter` (QoS shaper), and `InternetGateway` (WAN/LAN sink).
+- **Linux Networking Engine**: Maps `/proc/net/*` inodes to `/proc/[pid]/{fd,io}`, aborts blocked connections via Netlink `SOCK_DESTROY` / `ss -K`, and routes proxied streams via eBPF `cgroup/connect4` and local relays.
 
----
+## Controls & Shortcuts
 
-## Building and Running
+| Input | Action |
+| :--- | :--- |
+| **Drag node / Drop on rope** | Move node / Splice node inline into an existing connection |
+| **Drag pin / Right-drag rope** | Connect pins / Cut links (severed ropes fall off canvas) |
+| **Right-click canvas / header** | Spawn node or isolate app / Delete node |
+| **Middle-drag / `Space`** | Pan canvas / Center all nodes |
+| **Click World Map** | Focus map and click countries to filter traffic |
+| **`Ctrl+Z` / `Ctrl+Y` / `Ctrl+S`** | Undo / Redo / Save graph & group rules |
 
-### Prerequisites
+## Project Layout
 
-Ensure you have a C++ compiler (`gcc` or `clang`), `pkg-config`, and OpenGL libraries installed.
-
-### Build
-
-```sh
-cargo build
+```text
+WaterWall/
+├── imgui/          # Custom Dear ImGui C++ fork (Verlet ropes, 3D tilt, world map)
+├── vendor/         # Vendored `imgui` and `imgui-sys` crates with node graph FFI
+└── src/
+    ├── gui/        # 5-tab UI, node graph state, icons, flags, and custom widgets
+    ├── net/        # procfs scanner, DNS/GeoIP, socket killer, eBPF & proxy relay
+    └── utils/      # BPF loader, privilege elevation, parsers, and formatters
 ```
 
-### Run
+## Build & Run
+
+Requires Rust (`cargo`), a C++11 compiler (`g++`/`clang++`), `pkg-config`, and OpenGL/X11/Wayland headers.
 
 ```sh
-cargo run
+cargo run --release          # Launch GUI (prompts for optional sudo to inspect all PIDs)
+cargo run -- --no-sudo       # Launch GUI monitoring current user processes only
+cargo run -- --probe         # Print live network processes and sockets in terminal
+cargo run -- --daemon        # Run privileged background daemon on /run/waterwall.sock
+cargo test                   # Run unit & integration tests
 ```
+
+## Credits & License
+
+WaterWall is licensed under **MIT OR Apache-2.0**.
+
+This repository bundles modified versions of:
+- [**Dear ImGui**](https://github.com/ocornut/imgui) (`imgui/`) by Omar Cornut and contributors — licensed under the [MIT License](imgui/LICENSE.txt).
+- [**imgui-rs**](https://github.com/imgui-rs/imgui-rs) (`vendor/imgui`, `vendor/imgui-sys`) by the `imgui-rs` developers — licensed under [MIT](vendor/imgui/LICENSE-MIT) / [Apache-2.0](vendor/imgui/LICENSE-APACHE).
+- [**cimgui**](https://github.com/cimgui/cimgui) (`vendor/imgui-sys/third-party/`) by Stephan Dilly and contributors — licensed under the MIT License.

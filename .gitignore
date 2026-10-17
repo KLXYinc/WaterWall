@@ -1,2 +1,32 @@
-/target
+# Rust / Cargo build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Dear ImGui state & test binaries
 imgui.ini
+imgui/ng_test
+*.o
+*.a
+*.so
+*.dylib
+
+# WaterWall runtime & local state
+waterwall.sock
+/run/waterwall.sock
+*.sock
+*.log
+
+# Cargo vendoring metadata
+vendor/**/.cargo-ok
+vendor/**/.cargo_vcs_info.json
+vendor/**/*.orig
+
+# Editor & OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
