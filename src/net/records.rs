@@ -93,6 +93,20 @@ impl EndpointTrafficStats {
             None => true,
         }
     }
+
+    /// Returns the primary application name associated with this endpoint (highest traffic or first seen).
+    pub fn primary_app(&self) -> Option<&str> {
+        self.app_names
+            .iter()
+            .max_by_key(|name| {
+                let key = name.to_lowercase();
+                (
+                    self.app_sockets.get(&key).copied().unwrap_or(0),
+                    self.app_bytes.get(&key).copied().unwrap_or(0),
+                )
+            })
+            .map(String::as_str)
+    }
 }
 
 /// Persistent record for a remote or local Host/IP endpoint across sampling ticks.

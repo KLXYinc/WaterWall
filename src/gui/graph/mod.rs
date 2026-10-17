@@ -1,3 +1,4 @@
+pub mod flow_calc;
 pub mod history;
 pub mod sync;
 pub mod telemetry;
@@ -6,7 +7,8 @@ use imgui::node_graph as ng;
 use imgui::Ui;
 
 use self::history::GraphSnapshot;
-use crate::gui::nodes::{Item, Link, Node, NodeKind};
+use crate::gui::groups::AppGroupManager;
+use crate::gui::nodes::{rope_kind_name, Item, Link, Node, NodeKind};
 
 pub struct Graph {
     pub(crate) nodes: Vec<Node>,
@@ -17,6 +19,11 @@ pub struct Graph {
     pub(crate) redo_stack: Vec<GraphSnapshot>,
     pub(crate) drag_start_snapshot: Option<GraphSnapshot>,
     pub(crate) structural_change_during_drag: bool,
+    pub(crate) committed_nodes: Vec<Node>,
+    pub(crate) committed_links: Vec<Link>,
+    pub(crate) committed_groups: AppGroupManager,
+    pub(crate) committed_sig: String,
+    pub(crate) last_enforced_ebpf_state: (bool, String),
 }
 
 impl Graph {
@@ -49,6 +56,8 @@ impl Graph {
 
         // Local LAN goes directly from AppGroup [Out: Local LAN] -> Gateway [In: Local LAN]
         graph.push_link_multi(grp_lan_out, snk_lan_in);
+        let default_groups = AppGroupManager::new();
+        graph.commit_network_state(&default_groups);
         graph
     }
 
@@ -62,6 +71,11 @@ impl Graph {
             redo_stack: Vec::new(),
             drag_start_snapshot: None,
             structural_change_during_drag: false,
+            committed_nodes: Vec::new(),
+            committed_links: Vec::new(),
+            committed_groups: AppGroupManager::new(),
+            committed_sig: String::new(),
+            last_enforced_ebpf_state: (false, String::from("eBPF Standby")),
         }
     }
 
@@ -246,7 +260,7 @@ impl Graph {
         for node in &mut self.nodes {
             node.declare(ui);
         }
-        for link in &self.links {
+        for link in &mut self.links {
             ng::link_flow(
                 ui,
                 link.id,
@@ -255,6 +269,12 @@ impl Graph {
                 link.flow_intensity,
                 &link.label,
             );
+            if !link.kind_synced {
+                if link.rope_kind != 0 {
+                    ng::set_link_kind(link.id, link.rope_kind);
+                }
+                link.kind_synced = true;
+            }
         }
     }
 
@@ -321,6 +341,13 @@ impl Graph {
             },
             ng::Event::RmbNode { node } => self.remove_node(node),
             ng::Event::InsertNode { node, link } => self.insert_node_on_link(node, link),
+            ng::Event::RopeKindChanged { link, kind } => {
+                if let Some(l) = self.links.iter_mut().find(|l| l.id == link) {
+                    l.rope_kind = kind;
+                    l.kind_synced = true;
+                }
+                format!("Rope style: {} (Ctrl+S to save)", rope_kind_name(kind))
+            }
             ng::Event::RmbCanvas { .. } => String::new(),
         }
     }
@@ -380,7 +407,9 @@ impl Graph {
             id,
             from,
             to,
-            flow_intensity: 0.35,
+            flow_intensity: 0.0,
+            rope_kind: 0,
+            kind_synced: true,
             label: String::new(),
         });
     }

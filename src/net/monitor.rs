@@ -65,7 +65,7 @@ impl NetworkMonitor {
             .name("waterwall-monitor".to_string())
             .spawn(move || {
                 let mut prev_time = Instant::now();
-                let mut prev_proc_io: HashMap<u32, (u64, u64)> = HashMap::new();
+                let mut prev_proc_io: HashMap<u32, (u64, u64, u64)> = HashMap::new();
                 let mut prev_sys_net = read_system_net_dev();
                 let mut total_session_down = 0u64;
                 let mut total_session_up = 0u64;
@@ -88,13 +88,20 @@ impl NetworkMonitor {
                     let dt = now.duration_since(prev_time).as_secs_f64().max(0.1);
                     prev_time = now;
 
-                    let current_sys_net = read_system_net_dev();
+                     let current_sys_net = read_system_net_dev();
                     let sys_rx_delta = current_sys_net.rx_bytes.saturating_sub(prev_sys_net.rx_bytes);
                     let sys_tx_delta = current_sys_net.tx_bytes.saturating_sub(prev_sys_net.tx_bytes);
+                    let sys_pkt_delta = current_sys_net
+                        .rx_packets
+                        .saturating_sub(prev_sys_net.rx_packets)
+                        + current_sys_net
+                            .tx_packets
+                            .saturating_sub(prev_sys_net.tx_packets);
                     prev_sys_net = current_sys_net;
 
                     let system_down_speed = (sys_rx_delta as f64 / dt).max(0.0);
                     let system_up_speed = (sys_tx_delta as f64 / dt).max(0.0);
+                    let _ = sys_pkt_delta;
                     if !is_incog {
                         total_session_down = total_session_down.saturating_add(sys_rx_delta);
                         total_session_up = total_session_up.saturating_add(sys_tx_delta);
@@ -173,16 +180,26 @@ impl NetworkMonitor {
                             continue;
                         }
 
-                        let (prev_r, prev_w) = prev_proc_io
+                        let total_sysc = meta.syscr.saturating_add(meta.syscw);
+                        let (prev_r, prev_w, prev_pkt) = prev_proc_io
                             .get(pid)
                             .copied()
-                            .unwrap_or((meta.rchar, meta.wchar));
+                            .unwrap_or((meta.rchar, meta.wchar, total_sysc));
                         let down_delta = meta.rchar.saturating_sub(prev_r);
                         let up_delta = meta.wchar.saturating_sub(prev_w);
-                        prev_proc_io.insert(*pid, (meta.rchar, meta.wchar));
+                        let sysc_delta = total_sysc.saturating_sub(prev_pkt);
+                        prev_proc_io.insert(*pid, (meta.rchar, meta.wchar, total_sysc));
 
                         let download_speed = (down_delta as f64 / dt).max(0.0);
                         let upload_speed = (up_delta as f64 / dt).max(0.0);
+                        let byte_delta = down_delta + up_delta;
+                        let est_wire_pkts = if byte_delta > 0 {
+                            (byte_delta.div_ceil(1400)).max(sysc_delta.min(byte_delta.div_ceil(64)))
+                        } else {
+                            0
+                        };
+                        let packet_rate = (est_wire_pkts as f64 / dt).max(0.0);
+                        let total_packets = (meta.rchar + meta.wchar) / 1024 + total_sysc.min(100_000_000);
                         let name_key = meta.name.to_lowercase();
 
                         let is_blocked = blocked_clone
@@ -208,8 +225,10 @@ impl NetworkMonitor {
                             existing.pids.push(*pid);
                             existing.upload_speed += upload_speed;
                             existing.download_speed += download_speed;
+                            existing.packet_rate += packet_rate;
                             existing.total_uploaded += meta.wchar;
                             existing.total_downloaded += meta.rchar;
+                            existing.total_packets += total_packets;
                             existing.is_blocked |= is_blocked;
                             existing.is_proxied |= is_proxied;
                             for c in conns {
@@ -234,8 +253,10 @@ impl NetworkMonitor {
                                     connections: conns,
                                     upload_speed,
                                     download_speed,
+                                    packet_rate,
                                     total_uploaded: meta.wchar,
                                     total_downloaded: meta.rchar,
+                                    total_packets,
                                     download_history: Vec::new(),
                                     upload_history: Vec::new(),
                                     first_seen_id: 0,

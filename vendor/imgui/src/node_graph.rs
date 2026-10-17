@@ -8,6 +8,7 @@ pub enum Event {
     RmbNode { node: i32 },
     RmbCanvas { x: i32, y: i32 },
     InsertNode { node: i32, link: i32 },
+    RopeKindChanged { link: i32, kind: i32 },
 }
 pub fn begin(ui: &Ui, id: &str, size: [f32; 2]) -> bool {
     unsafe { sys::igNG_Begin(ui.scratch_txt(id), size[0], size[1]) }
@@ -80,6 +81,12 @@ pub fn link_flow(
         )
     }
 }
+pub fn set_link_kind(link_id: i32, kind: i32) {
+    unsafe { sys::igNG_SetLinkKind(link_id, kind) }
+}
+pub fn get_link_kind(link_id: i32) -> i32 {
+    unsafe { sys::igNG_GetLinkKind(link_id) }
+}
 pub fn pop_event() -> Option<Event> {
     let mut a = 0i32;
     let mut b = 0i32;
@@ -90,6 +97,7 @@ pub fn pop_event() -> Option<Event> {
         4 => Some(Event::RmbNode { node: a }),
         5 => Some(Event::RmbCanvas { x: a, y: b }),
         6 => Some(Event::InsertNode { node: a, link: b }),
+        7 => Some(Event::RopeKindChanged { link: a, kind: b }),
         _ => None,
     }
 }

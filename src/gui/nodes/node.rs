@@ -2,6 +2,7 @@ use imgui::node_graph as ng;
 use imgui::Ui;
 
 use super::item::{Item, WAVE_SAMPLES};
+use super::probe::ProbeConfig;
 use super::NodeKind;
 use crate::utils::{parse_proxy_url, read_system_clipboard};
 
@@ -15,24 +16,47 @@ pub struct Node {
     pub width: f32,
     pub accent: [f32; 4],
     pub items: Vec<Item>,
+    pub probe_config: ProbeConfig,
 }
 
 impl Node {
     pub fn new(kind: NodeKind, id: i32, pos: [f32; 2]) -> Self {
+        let probe_config = ProbeConfig::default();
+        let title = if kind == NodeKind::TrafficMonitor {
+            probe_config.variant.header_title().to_string()
+        } else {
+            kind.title().to_string()
+        };
         Self {
             id,
             kind,
-            title: kind.title().to_string(),
+            title,
             bound_group_id: None,
             pos,
             width: kind.width(),
             accent: kind.accent(),
             items: kind.default_items(id),
+            probe_config,
+        }
+    }
+
+    fn is_item_visible(&self, item: &Item) -> bool {
+        if self.kind != NodeKind::TrafficMonitor {
+            return true;
+        }
+        match item {
+            Item::DataMeter { .. } => self.probe_config.show_meter,
+            Item::WaveGraph { .. } => self.probe_config.show_wave,
+            _ => true,
         }
     }
 
     pub fn content_height(&self) -> f32 {
-        self.items.iter().map(Item::height).sum()
+        self.items
+            .iter()
+            .filter(|it| self.is_item_visible(it))
+            .map(Item::height)
+            .sum()
     }
 
     pub fn pin_id(&self, is_input: bool) -> Option<i32> {
@@ -67,6 +91,31 @@ impl Node {
                     }
                     return;
                 }
+            }
+        }
+    }
+
+    pub fn set_readout_nth(
+        &mut self,
+        nth: usize,
+        new_label: &'static str,
+        new_val: String,
+        new_col: Option<[f32; 4]>,
+    ) {
+        if let Some(Item::Readout {
+            label,
+            value,
+            color,
+        }) = self
+            .items
+            .iter_mut()
+            .filter(|it| matches!(it, Item::Readout { .. }))
+            .nth(nth)
+        {
+            *label = new_label;
+            *value = new_val;
+            if let Some(c) = new_col {
+                *color = c;
             }
         }
     }
@@ -182,12 +231,29 @@ impl Node {
     }
 
     pub fn set_wave(&mut self, wave: &[f32]) {
+        self.set_wave_detailed(wave, wave, &[0.0; WAVE_SAMPLES], 0);
+    }
+
+    pub fn set_wave_detailed(
+        &mut self,
+        combined: &[f32],
+        down: &[f32],
+        up: &[f32],
+        mode: u8,
+    ) {
         for item in &mut self.items {
-            if let Item::WaveGraph { values, .. } = item {
-                let len = wave.len().min(WAVE_SAMPLES);
-                values.fill(0.0);
-                let offset = WAVE_SAMPLES - len;
-                values[offset..].copy_from_slice(&wave[wave.len() - len..]);
+            if let Item::WaveGraph {
+                values,
+                down_values,
+                up_values,
+                mode: m,
+                ..
+            } = item
+            {
+                *m = mode;
+                copy_wave_slice(values, combined);
+                copy_wave_slice(down_values, down);
+                copy_wave_slice(up_values, up);
             }
         }
     }
@@ -241,6 +307,9 @@ impl Node {
     }
 
     pub fn declare(&mut self, ui: &Ui) {
+        if self.kind == NodeKind::TrafficMonitor {
+            self.title = self.probe_config.variant.header_title().to_string();
+        }
         let content_h = self.content_height();
         let _id_token = ui.push_id_int(self.id);
         ng::node_begin(
@@ -252,10 +321,35 @@ impl Node {
             &self.title,
             self.accent,
         );
+        let header_min = ui.item_rect_min();
+
+        let cfg = self.probe_config;
+        let is_probe = self.kind == NodeKind::TrafficMonitor;
         for item in &mut self.items {
+            if is_probe {
+                match item {
+                    Item::DataMeter { .. } if !cfg.show_meter => continue,
+                    Item::WaveGraph { .. } if !cfg.show_wave => continue,
+                    _ => {}
+                }
+            }
             item.declare(ui);
         }
+
+        if is_probe {
+            self.render_probe_header_controls(ui, header_min);
+        }
+
         ng::node_end();
         self.normalize_proxy_fields(ui);
+    }
+}
+
+fn copy_wave_slice(dst: &mut [f32; WAVE_SAMPLES], src: &[f32]) {
+    let len = src.len().min(WAVE_SAMPLES);
+    dst.fill(0.0);
+    if len > 0 {
+        let offset = WAVE_SAMPLES - len;
+        dst[offset..].copy_from_slice(&src[src.len() - len..]);
     }
 }

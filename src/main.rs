@@ -119,6 +119,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!();
         println!("FLAGS:");
         println!("  (none)        Launch the Dear ImGui visual dark-mode GUI dashboard");
+        println!("  --no-sudo     Skip optional startup sudo prompt (monitor user apps only)");
         println!("  --probe       Sample and print live network processes, sockets, and destinations");
         println!("  --daemon      Run background privileged IPC daemon on /run/waterwall.sock");
         println!("  -h, --help    Print this help menu");
@@ -151,6 +152,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         net::run_daemon_server(running)?;
         return Ok(());
     }
+
+    // Request optional sudo on startup so system apps (/proc/<pid>/fd & io) can be monitored;
+    // if declined by the user, continues in User-Apps-Only mode.
+    utils::try_optional_sudo_on_startup(&args);
 
     if args.iter().any(|a| a == "--probe" || a == "--dump" || a == "--list") {
         println!("WaterWall — Probing active network processes and connections...\n");

@@ -4,8 +4,8 @@ use super::flags::draw_flag_and_code;
 use super::groups::{app_signature_color, render_app_group_selector};
 use super::icons::IconManager;
 use super::widgets::{
-    draw_app_icon_or_badge, draw_dual_area_chart, render_shared_filter_bar, truncate_str,
-    SharedFilterState,
+    draw_app_icon_or_badge, draw_dual_area_chart, render_shared_filter_bar,
+    show_app_hover_tooltip, truncate_str, SharedFilterState,
 };
 use crate::net::{
     classify_ip_location_with_domain, classify_traffic_type, format_bytes,
@@ -135,6 +135,9 @@ fn render_apps_left_panel(
                     state.selected_pid = Some(app.pid);
                     filter.selected_app = Some(app.name.clone());
                 }
+                if ui.is_item_hovered() {
+                    show_app_hover_tooltip(ui, app, &group.name);
+                }
 
                 let total_bytes = app.total_downloaded + app.total_uploaded;
                 let data_str = format_bytes(total_bytes);
@@ -198,17 +201,48 @@ fn render_sockets_right_panel(
 
             let header_pos = ui.cursor_screen_pos();
             draw_app_icon_or_badge(ui, icon_manager, gl, app, header_pos, 36.0);
+            let grp_name = filter.groups.group_for_app(&app.name).name.clone();
+            let (_, cat_name, cat_col) = app.category_badge();
 
             ui.set_cursor_screen_pos([header_pos[0] + 46.0, header_pos[1]]);
             ui.text_colored([0.96f32, 0.97, 0.99, 1.0], app.display_name());
             ui.same_line();
-            ui.text_disabled(format!("(PIDs: {:?})", &app.pids[..app.pids.len().min(5)]));
+            ui.text_colored(cat_col, format!("[{}]", cat_name));
+            ui.same_line();
+            ui.text_disabled(format!(
+                "PIDs: {:?}  ·  IN: {} / OUT: {}",
+                &app.pids[..app.pids.len().min(5)],
+                format_bytes(app.total_downloaded),
+                format_bytes(app.total_uploaded)
+            ));
 
-            ui.set_cursor_screen_pos([header_pos[0] + 46.0, header_pos[1] + 18.0]);
-            let path_or_cmd = if app.exe_path.is_empty() { &app.cmdline } else { &app.exe_path };
-            ui.text_disabled(truncate_str(path_or_cmd, ((width - 60.0) / 7.0).max(20.0) as usize));
+            let max_line_chars = ((width - 60.0) / 7.0).max(20.0) as usize;
+            let exe = if app.exe_path.is_empty() {
+                "(system / unknown path)"
+            } else {
+                &app.exe_path
+            };
+            ui.set_cursor_screen_pos([header_pos[0] + 46.0, header_pos[1] + 16.0]);
+            ui.text_colored(
+                [0.68f32, 0.78, 0.90, 1.0],
+                truncate_str(&format!("Path: {}", exe), max_line_chars),
+            );
+            if ui.is_item_hovered() {
+                show_app_hover_tooltip(ui, app, &grp_name);
+            }
 
-            ui.set_cursor_screen_pos([header_pos[0], header_pos[1] + 42.0]);
+            ui.set_cursor_screen_pos([header_pos[0] + 46.0, header_pos[1] + 31.0]);
+            let cmd_txt = if app.cmdline.is_empty() {
+                format!("Group: {}  ·  {} active / {} total sockets", grp_name, app.active_connection_count(), app.connections.len())
+            } else {
+                format!("Cmd: {}", app.cmdline)
+            };
+            ui.text_disabled(truncate_str(&cmd_txt, max_line_chars));
+            if ui.is_item_hovered() {
+                show_app_hover_tooltip(ui, app, &grp_name);
+            }
+
+            ui.set_cursor_screen_pos([header_pos[0], header_pos[1] + 52.0]);
 
             render_app_group_selector(
                 ui,

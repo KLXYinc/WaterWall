@@ -28,6 +28,9 @@ impl Graph {
     pub fn restore_snapshot(&mut self, snap: GraphSnapshot) {
         self.nodes = snap.nodes;
         self.links = snap.links;
+        for l in &mut self.links {
+            l.kind_synced = false;
+        }
         self.next_node_id = snap.next_node_id;
         self.next_link_id = snap.next_link_id;
     }
@@ -85,11 +88,85 @@ impl Graph {
         self.next_link_id = fresh.next_link_id;
         imgui::node_graph::reset_interaction();
         imgui::node_graph::set_pan(crate::gui::theme::INITIAL_PAN);
-        String::from("Reset Flow Graph to default (Press Ctrl+Z to undo)")
+        String::from("Reset Flow Graph (Unsaved — Click Save or Ctrl+S to apply network rules)")
     }
 
-    /// Saves the complete Flow Graph (nodes, positions, settings, links, and app groups) to disk.
-    pub fn save_to_disk(&self, groups: &AppGroupManager) -> String {
+    /// Computes a deterministic signature of all policy-relevant graph state (ropes, nodes, settings, and app groups).
+    pub fn compute_policy_sig(&self, groups: &AppGroupManager) -> String {
+        let mut sig = String::with_capacity(512);
+        let mut assigns: Vec<(&String, &usize)> = groups.app_to_group.iter().collect();
+        assigns.sort_by_key(|(k, _)| *k);
+        for (app, gid) in assigns {
+            sig.push_str(&format!("A:{}:{};", app, gid));
+        }
+
+        let mut sorted_nodes: Vec<&Node> = self.nodes.iter().collect();
+        sorted_nodes.sort_by_key(|n| n.id);
+        for n in sorted_nodes {
+            sig.push_str(&format!(
+                "N:{}:{}:{:?};",
+                n.id,
+                kind_to_tag(n.kind),
+                n.bound_group_id
+            ));
+            for item in &n.items {
+                match item {
+                    Item::TextInput { label, value, .. } => {
+                        sig.push_str(&format!("T:{}:{};", label, value.trim()));
+                    }
+                    Item::Combo {
+                        label, selected, ..
+                    } => {
+                        sig.push_str(&format!("C:{}:{};", label, selected));
+                    }
+                    Item::Checkbox { label, value } => {
+                        sig.push_str(&format!("K:{}:{};", label, value));
+                    }
+                    Item::Slider { label, value, .. } => {
+                        sig.push_str(&format!("S:{}:{:.1};", label, value));
+                    }
+                    _ => {}
+                }
+            }
+            if n.kind == NodeKind::TrafficMonitor {
+                sig.push_str(&format!(
+                    "P:{}:{}:{}:{};",
+                    n.probe_config.variant as usize,
+                    n.probe_config.wave_channel as usize,
+                    n.probe_config.show_meter,
+                    n.probe_config.show_wave
+                ));
+            }
+        }
+
+        let mut sorted_links: Vec<(i32, i32, i32)> = self
+            .links
+            .iter()
+            .map(|l| (l.from, l.to, l.rope_kind))
+            .collect();
+        sorted_links.sort_unstable();
+        for (from, to, rkind) in sorted_links {
+            sig.push_str(&format!("L:{}->{}:{};", from, to, rkind));
+        }
+        sig
+    }
+
+    /// Commits the current nodes, ropes, and app groups as the active saved network policy.
+    pub fn commit_network_state(&mut self, groups: &AppGroupManager) {
+        self.committed_nodes = self.nodes.clone();
+        self.committed_links = self.links.clone();
+        self.committed_groups = groups.clone();
+        self.committed_sig = self.compute_policy_sig(groups);
+    }
+
+    /// Returns `true` if there are unsaved rope, node, setting, or app-group changes pending Save.
+    pub fn has_unsaved_changes(&self, groups: &AppGroupManager) -> bool {
+        self.compute_policy_sig(groups) != self.committed_sig
+    }
+
+    /// Saves the complete Flow Graph (nodes, positions, settings, links, and app groups) to disk
+    /// and commits the network rules so they take effect immediately.
+    pub fn save_to_disk(&mut self, groups: &AppGroupManager) -> String {
         let mut out = String::from("# WaterWall Flow Graph & App Groups v1\n");
         out.push_str(&format!(
             "META|{}|{}\n",
@@ -141,19 +218,30 @@ impl Graph {
                     _ => {}
                 }
             }
+            if n.kind == NodeKind::TrafficMonitor {
+                out.push_str(&format!(
+                    "PROBE_CFG|{}|{}|{}|{}|{}\n",
+                    n.id,
+                    n.probe_config.variant as usize,
+                    n.probe_config.wave_channel as usize,
+                    n.probe_config.show_meter,
+                    n.probe_config.show_wave
+                ));
+            }
         }
 
         for l in &self.links {
-            out.push_str(&format!("LINK|{}|{}|{}\n", l.id, l.from, l.to));
+            out.push_str(&format!("LINK|{}|{}|{}|{}\n", l.id, l.from, l.to, l.rope_kind));
         }
 
         let path = graph_save_path();
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
+        self.commit_network_state(groups);
         match fs::write(&path, &out) {
-            Ok(_) => format!("Saved Flow Graph to {}", path.display()),
-            Err(e) => format!("Failed to save Flow Graph: {}", e),
+            Ok(_) => format!("Saved & applied network rules ({})", path.display()),
+            Err(e) => format!("Applied network rules (disk save error: {})", e),
         }
     }
 
@@ -276,15 +364,32 @@ impl Graph {
                         }
                     }
                 }
+                "PROBE_CFG" if parts.len() >= 6 => {
+                    if let Ok(nid) = parts[1].parse::<i32>() {
+                        if let Some(n) = nodes.iter_mut().find(|n| n.id == nid) {
+                            let var_idx = parts[2].parse::<usize>().unwrap_or(0);
+                            let ch_idx = parts[3].parse::<usize>().unwrap_or(0);
+                            n.probe_config.variant =
+                                crate::gui::nodes::ProbeVariant::from_index(var_idx);
+                            n.probe_config.wave_channel =
+                                crate::gui::nodes::ProbeWaveChannel::from_index(ch_idx);
+                            n.probe_config.show_meter = parts[4].parse().unwrap_or(true);
+                            n.probe_config.show_wave = parts[5].parse().unwrap_or(true);
+                        }
+                    }
+                }
                 "LINK" if parts.len() >= 4 => {
                     if let (Ok(id), Ok(from), Ok(to)) =
                         (parts[1].parse(), parts[2].parse(), parts[3].parse())
                     {
+                        let rope_kind = parts.get(4).and_then(|s| s.parse().ok()).unwrap_or(0);
                         links.push(Link {
                             id,
                             from,
                             to,
-                            flow_intensity: 0.35,
+                            flow_intensity: 0.0,
+                            rope_kind,
+                            kind_synced: false,
                             label: String::new(),
                         });
                     }
@@ -301,6 +406,7 @@ impl Graph {
         self.links = links;
         self.next_node_id = next_node_id.max(self.nodes.iter().map(|n| n.id + 1).max().unwrap_or(1));
         self.next_link_id = next_link_id.max(self.links.iter().map(|l| l.id + 1).max().unwrap_or(1));
+        self.commit_network_state(groups);
         Some(format!("Loaded saved Flow Graph from {}", path.display()))
     }
 }

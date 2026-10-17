@@ -1,10 +1,12 @@
 pub mod item;
 pub mod node;
 pub mod pin;
+pub mod probe;
 
 pub use item::{Item, WAVE_SAMPLES};
 pub use node::Node;
-pub use pin::{pin_id, Link, Pin};
+pub use pin::{pin_id, rope_kind_name, Link, Pin};
+pub use probe::{ProbeConfig, ProbeVariant, ProbeWaveChannel};
 
 use crate::gui::theme;
 
@@ -62,7 +64,7 @@ impl NodeKind {
             NodeKind::VpnNode => 250.0,
             NodeKind::ProxyNode => 270.0,
             NodeKind::RateLimiter => 230.0,
-            NodeKind::TrafficMonitor => 248.0,
+            NodeKind::TrafficMonitor => 274.0,
             NodeKind::InternetGateway => 248.0,
         }
     }
@@ -138,6 +140,9 @@ impl NodeKind {
                 Item::pin_in(pin_id(id, 1), "In (Probe)"),
                 Item::readout("State:", "DISCONNECTED", [0.55, 0.62, 0.72, 1.0]),
                 Item::data_meter(acc),
+                Item::readout("In / Out:", "▼ 0 B/s  ▲ 0 B/s", [0.68, 0.78, 0.90, 1.0]),
+                Item::readout("Flow:", "0 active / 0 sockets", [0.68, 0.78, 0.90, 1.0]),
+                Item::readout("Target:", "No active stream", [0.62, 0.72, 0.84, 1.0]),
                 Item::wave(acc),
                 Item::pin_out(pin_id(id, 2), "Out (Pass)"),
             ],

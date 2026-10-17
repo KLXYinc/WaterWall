@@ -2,6 +2,7 @@ use imgui::node_graph as ng;
 use imgui::{StyleColor, Ui};
 
 use super::pin::Pin;
+use super::probe::draw_detailed_node_wave;
 
 pub const WIDGET_ROW_H: f32 = 22.0;
 pub const TEXT_INPUT_ROW_H: f32 = 23.0;
@@ -10,7 +11,7 @@ pub const BUTTON_ROW_H: f32 = 24.0;
 pub const CHECKBOX_ROW_H: f32 = 20.0;
 pub const READOUT_ROW_H: f32 = 19.0;
 pub const METER_ROW_H: f32 = 26.0;
-pub const WAVE_ROW_H: f32 = 46.0;
+pub const WAVE_ROW_H: f32 = 68.0;
 pub const WAVE_SAMPLES: usize = 60;
 
 #[derive(Clone)]
@@ -53,6 +54,9 @@ pub enum Item {
     },
     WaveGraph {
         values: Box<[f32; WAVE_SAMPLES]>,
+        down_values: Box<[f32; WAVE_SAMPLES]>,
+        up_values: Box<[f32; WAVE_SAMPLES]>,
+        mode: u8,
         color: [f32; 4],
     },
 }
@@ -141,6 +145,9 @@ impl Item {
     pub fn wave(color: [f32; 4]) -> Self {
         Item::WaveGraph {
             values: Box::new([0.0; WAVE_SAMPLES]),
+            down_values: Box::new([0.0; WAVE_SAMPLES]),
+            up_values: Box::new([0.0; WAVE_SAMPLES]),
+            mode: 0,
             color,
         }
     }
@@ -259,16 +266,23 @@ impl Item {
                 let _row = prepare_row(ui, CHECKBOX_ROW_H);
                 ui.checkbox(*label, value);
             }
-            Item::WaveGraph { values, color } => {
+            Item::WaveGraph {
+                values,
+                down_values,
+                up_values,
+                mode,
+                color,
+            } => {
                 let row = prepare_row(ui, WAVE_ROW_H);
-                let peak = values.iter().copied().fold(0.0f32, |a, b| a.max(b.abs()));
-                let scale = (peak * 1.2).max(1024.0);
-                let _style = ui.push_style_color(StyleColor::PlotLines, *color);
-                ui.plot_lines("##node_wave", values.as_ref())
-                    .scale_min(0.0)
-                    .scale_max(scale)
-                    .graph_size([row[2], WAVE_ROW_H - 2.0])
-                    .build();
+                draw_detailed_node_wave(
+                    ui,
+                    row,
+                    values.as_ref(),
+                    down_values.as_ref(),
+                    up_values.as_ref(),
+                    *mode,
+                    *color,
+                );
             }
         }
     }

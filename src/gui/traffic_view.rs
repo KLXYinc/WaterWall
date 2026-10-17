@@ -3,7 +3,8 @@ use imgui::{StyleColor, Ui};
 use super::groups::{app_signature_color, render_app_group_selector};
 use super::icons::IconManager;
 use super::widgets::{
-    draw_app_icon_or_badge, render_shared_filter_bar, truncate_str, SharedFilterState,
+    draw_app_icon_or_badge, render_shared_filter_bar, show_app_hover_tooltip, truncate_str,
+    SharedFilterState,
 };
 use crate::net::{
     format_bytes, format_speed, AppNetworkInfo, NetworkMonitor, NetworkSnapshot, HISTORY_LEN,
@@ -332,7 +333,7 @@ fn render_top_apps_color_list(
                 let group = filter.groups.group_for_app(&app.name).clone();
                 let row_pos = ui.cursor_screen_pos();
                 let row_w = avail[0] - 12.0;
-                let row_h = if is_sel { 52.0 } else { 38.0 };
+                let row_h = if is_sel { 72.0 } else { 38.0 };
 
                 {
                     let dl = ui.get_window_draw_list();
@@ -358,6 +359,9 @@ fn render_top_apps_color_list(
                     .build()
                 {
                     filter.selected_app = if is_sel { None } else { Some(app.name.clone()) };
+                }
+                if ui.is_item_hovered() {
+                    show_app_hover_tooltip(ui, app, &group.name);
                 }
 
                 draw_app_icon_or_badge(
@@ -403,7 +407,22 @@ fn render_top_apps_color_list(
                 }
 
                 if is_sel {
-                    ui.set_cursor_screen_pos([row_pos[0] + 44.0, row_pos[1] + 28.0]);
+                    let exe = if app.exe_path.is_empty() {
+                        "(system / unknown path)"
+                    } else {
+                        &app.exe_path
+                    };
+                    let info_line = format!(
+                        "Path: {}   ·   PIDs: {:?}   ·   Cmd: {}",
+                        exe,
+                        &app.pids[..app.pids.len().min(5)],
+                        if app.cmdline.is_empty() { "-" } else { &app.cmdline }
+                    );
+                    let max_chars = ((row_w - 60.0) / 6.8).max(24.0) as usize;
+                    ui.set_cursor_screen_pos([row_pos[0] + 44.0, row_pos[1] + 27.0]);
+                    ui.text_disabled(truncate_str(&info_line, max_chars));
+
+                    ui.set_cursor_screen_pos([row_pos[0] + 44.0, row_pos[1] + 45.0]);
                     render_app_group_selector(
                         ui,
                         &format!("tm_card_{}", app.pid),

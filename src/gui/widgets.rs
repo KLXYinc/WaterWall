@@ -16,29 +16,9 @@ pub enum ScopeFilter {
     LocalOnly,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SortMode {
-    StableOrder,
-    HighestTraffic,
-    ActiveSockets,
-    Alphabetical,
-}
-
-impl SortMode {
-    pub fn label(self) -> &'static str {
-        match self {
-            SortMode::StableOrder => "Stable (No Jump)",
-            SortMode::HighestTraffic => "Top Bandwidth",
-            SortMode::ActiveSockets => "Active Sockets",
-            SortMode::Alphabetical => "Name (A-Z)",
-        }
-    }
-}
-
 /// Unified filter, selection, and group state shared across all views (DRY)
 pub struct SharedFilterState {
     pub scope: ScopeFilter,
-    pub sort_mode: SortMode,
     pub search_query: String,
     pub selected_app: Option<String>,
     pub selected_country: Option<CountryCode>,
@@ -52,7 +32,6 @@ impl Default for SharedFilterState {
     fn default() -> Self {
         Self {
             scope: ScopeFilter::All,
-            sort_mode: SortMode::StableOrder,
             search_query: String::new(),
             selected_app: None,
             selected_country: None,
@@ -73,26 +52,7 @@ impl SharedFilterState {
     }
 
     pub fn sort_apps(&self, apps: &mut [&AppNetworkInfo]) {
-        match self.sort_mode {
-            SortMode::StableOrder => apps.sort_by_key(|a| a.first_seen_id),
-            SortMode::HighestTraffic => apps.sort_by(|a, b| {
-                let ta = (a.total_downloaded + a.total_uploaded) / (1024 * 64);
-                let tb = (b.total_downloaded + b.total_uploaded) / (1024 * 64);
-                tb.cmp(&ta).then_with(|| a.first_seen_id.cmp(&b.first_seen_id))
-            }),
-            SortMode::ActiveSockets => apps.sort_by(|a, b| {
-                b.connections
-                    .len()
-                    .cmp(&a.connections.len())
-                    .then_with(|| a.first_seen_id.cmp(&b.first_seen_id))
-            }),
-            SortMode::Alphabetical => apps.sort_by(|a, b| {
-                a.name
-                    .to_lowercase()
-                    .cmp(&b.name.to_lowercase())
-                    .then_with(|| a.first_seen_id.cmp(&b.first_seen_id))
-            }),
-        }
+        apps.sort_by_key(|a| a.first_seen_id);
     }
 
     pub fn matches_app(&self, app: &AppNetworkInfo) -> bool {
@@ -153,25 +113,6 @@ pub fn render_shared_filter_bar(
         }
         ui.same_line();
     }
-
-    ui.same_line_with_spacing(0.0, 10.0);
-    ui.text_disabled("Order:");
-    ui.same_line();
-    if ui.button(format!(" {} [v] ", filter.sort_mode.label())) {
-        ui.open_popup("shared_sort_popup");
-    }
-    ui.popup("shared_sort_popup", || {
-        for mode in [
-            SortMode::StableOrder,
-            SortMode::HighestTraffic,
-            SortMode::ActiveSockets,
-            SortMode::Alphabetical,
-        ] {
-            if ui.menu_item(mode.label()) {
-                filter.sort_mode = mode;
-            }
-        }
-    });
 
     ui.same_line_with_spacing(0.0, 10.0);
     ui.text_disabled("Search:");
@@ -441,4 +382,82 @@ pub fn draw_country_row(
 
     ui.set_cursor_screen_pos([row_pos[0], row_pos[1] + row_h]);
     clicked
+}
+
+/// Shows a detailed tooltip with the application's binary path, command line, PIDs, group, and traffic stats.
+pub fn show_app_hover_tooltip(ui: &Ui, app: &AppNetworkInfo, group_name: &str) {
+    let (_, cat_name, _) = app.category_badge();
+    let exe = if app.exe_path.is_empty() {
+        "(system / unknown path)"
+    } else {
+        &app.exe_path
+    };
+    let cmd = if app.cmdline.is_empty() {
+        "(none)"
+    } else {
+        &truncate_str(&app.cmdline, 110)
+    };
+    let pids_preview = &app.pids[..app.pids.len().min(8)];
+
+    ui.tooltip_text(format!(
+        "{}  [{}]\n\
+         ----------------------------------------\n\
+         Path:     {}\n\
+         Cmdline:  {}\n\
+         PIDs:     {:?} ({} instance{})\n\
+         Group:    {}\n\
+         Speed:    IN {}  |  OUT {}\n\
+         Total:    IN {}  |  OUT {}\n\
+         Sockets:  {} active / {} total",
+        app.display_name(),
+        cat_name,
+        exe,
+        cmd,
+        pids_preview,
+        app.instance_count,
+        if app.instance_count == 1 { "" } else { "s" },
+        group_name,
+        format_speed(app.download_speed),
+        format_speed(app.upload_speed),
+        format_bytes(app.total_downloaded),
+        format_bytes(app.total_uploaded),
+        app.active_connection_count(),
+        app.connections.len()
+    ));
+}
+
+/// Renders a compact summary of the selected application's path, cmdline, and PIDs.
+pub fn render_selected_app_details(ui: &Ui, app: &AppNetworkInfo, group_name: &str, width: f32) {
+    let (_, cat_name, cat_col) = app.category_badge();
+    let max_chars = ((width - 18.0) / 6.6).max(16.0) as usize;
+    let pids_preview = &app.pids[..app.pids.len().min(4)];
+
+    ui.text_colored(cat_col, format!("[{}]", cat_name));
+    ui.same_line();
+    ui.text_disabled(format!(
+        "PID{}: {:?} · {} conns",
+        if app.pids.len() > 1 { "s" } else { "" },
+        pids_preview,
+        app.connections.len()
+    ));
+
+    let exe = if app.exe_path.is_empty() {
+        "(system / kernel process)"
+    } else {
+        &app.exe_path
+    };
+    ui.text_colored(
+        [0.68f32, 0.78, 0.90, 1.0],
+        truncate_str(&format!("Path: {}", exe), max_chars),
+    );
+    if ui.is_item_hovered() {
+        show_app_hover_tooltip(ui, app, group_name);
+    }
+
+    if !app.cmdline.is_empty() && app.cmdline != app.exe_path {
+        ui.text_disabled(truncate_str(&format!("Cmd: {}", app.cmdline), max_chars));
+        if ui.is_item_hovered() {
+            show_app_hover_tooltip(ui, app, group_name);
+        }
+    }
 }

@@ -8,12 +8,12 @@ use super::groups::{
 };
 use super::icons::IconManager;
 use super::widgets::{
-    draw_app_icon_or_badge, draw_country_row, draw_dual_area_chart, render_shared_filter_bar,
-    truncate_str, SharedFilterState, SortMode,
+    draw_app_icon_or_badge, draw_country_row, render_selected_app_details,
+    render_shared_filter_bar, show_app_hover_tooltip, truncate_str, SharedFilterState,
 };
 use crate::net::{
     format_bytes, format_speed, is_remote_ip, AppNetworkInfo, CountryCode, HostRecord,
-    NetworkMonitor, NetworkSnapshot, ProtocolRecord, HISTORY_LEN,
+    NetworkMonitor, NetworkSnapshot, ProtocolRecord,
 };
 
 pub fn render_usage_view(
@@ -30,7 +30,7 @@ pub fn render_usage_view(
     ui.spacing();
 
     let avail = ui.content_region_avail();
-    let body_h = (avail[1] - 106.0).max(250.0);
+    let body_h = avail[1].max(250.0);
     let left_w = 252.0;
     let col_w = ((avail[0].max(800.0) - left_w - 24.0).max(480.0) / 3.0).max(150.0);
 
@@ -41,11 +41,6 @@ pub fn render_usage_view(
     render_usage_hosts_column(filter, &snapshot.hosts, col_w, body_h, ui);
     ui.same_line();
     render_usage_protocols_column(filter, &snapshot.protocols, col_w, body_h, ui);
-
-    ui.spacing();
-    ui.separator();
-    ui.spacing();
-    render_usage_bottom_graph(filter, snapshot, ui);
 }
 
 fn render_left_analytics_panel(
@@ -142,9 +137,12 @@ fn render_left_analytics_panel(
         }
         ui.set_cursor_screen_pos([pos[0] + 8.0, wan_y + 24.0]);
 
-        // Only when an app is selected, show the Group selector & "Show / Edit Group Apps"
+        // When an app is selected, show its Path & Info, Group selector & "Show / Edit Group Apps"
         if let Some(app) = sel_app_obj {
             ui.separator();
+            let grp_name = filter.groups.group_for_app(&app.name).name.clone();
+            render_selected_app_details(ui, app, &grp_name, width);
+            ui.spacing();
             render_app_group_selector(ui, "usage_left", &app.name, &mut filter.groups, &mut filter.new_group_name_buf);
             let cur_gid = filter.groups.group_id_for_app(&app.name);
             let pop_id = format!("usage_grp_apps_pop_{}", cur_gid);
@@ -180,7 +178,7 @@ fn render_left_analytics_panel(
 
         let mut countries: Vec<(CountryCode, u64, usize, u64)> =
             country_map.into_iter().map(|(cc, (b, s, id))| (cc, b, s, id)).collect();
-        countries.sort_by_key(|a| a.3);
+        countries.sort_by_key(|a| (a.0 == CountryCode::LOCAL, a.3));
         let max_c_bytes = countries.iter().map(|c| c.1).max().unwrap_or(1) as f32;
 
         for (cc, bytes, sockets, _) in countries {
@@ -246,6 +244,10 @@ fn render_usage_apps_column(
             if ui.selectable_config(format!("##sel_usage_app_{}", app.pid)).selected(is_selected).size([width - 12.0, row_h - 4.0]).build() {
                 filter.selected_app = if is_selected { None } else { Some(app.name.clone()) };
             }
+            if ui.is_item_hovered() {
+                let grp = filter.groups.group_for_app(&app.name);
+                show_app_hover_tooltip(ui, app, &grp.name);
+            }
             draw_app_icon_or_badge(ui, icon_manager, gl, app, [row_pos[0] + 4.0, row_pos[1] + 3.0], 20.0);
 
             let max_chars = ((width - 105.0) / 7.2).max(10.0) as usize;
@@ -273,7 +275,8 @@ fn render_usage_apps_column(
 
 fn render_usage_hosts_column(filter: &mut SharedFilterState, hosts: &[HostRecord], width: f32, height: f32, ui: &Ui) {
     if let Some(_child) = ui.child_window("usage_col_hosts").size([width, height]).build(|| {
-        let app_filter = filter.selected_app.as_deref();
+        let selected_app = filter.selected_app.clone();
+        let app_filter = selected_app.as_deref();
         let mut filtered: Vec<&HostRecord> = hosts
             .iter()
             .filter(|h| {
@@ -284,14 +287,7 @@ fn render_usage_hosts_column(filter: &mut SharedFilterState, hosts: &[HostRecord
             })
             .collect();
 
-        filtered.sort_by(|a, b| match filter.sort_mode {
-            SortMode::StableOrder => a.first_seen_id.cmp(&b.first_seen_id),
-            SortMode::HighestTraffic => (b.bytes_for_app(app_filter) / (1024 * 256))
-                .cmp(&(a.bytes_for_app(app_filter) / (1024 * 256)))
-                .then_with(|| a.first_seen_id.cmp(&b.first_seen_id)),
-            SortMode::ActiveSockets => b.sockets_for_app(app_filter).cmp(&a.sockets_for_app(app_filter)).then_with(|| a.first_seen_id.cmp(&b.first_seen_id)),
-            SortMode::Alphabetical => a.display_title.to_lowercase().cmp(&b.display_title.to_lowercase()),
-        });
+        filtered.sort_by_key(|a| a.first_seen_id);
 
         ui.text_colored([0.96f32, 0.97, 0.99, 1.0], format!("Hosts & IPs ({})", filtered.len()));
         ui.separator();
@@ -304,8 +300,40 @@ fn render_usage_hosts_column(filter: &mut SharedFilterState, hosts: &[HostRecord
             let bytes = item.bytes_for_app(app_filter);
             let active_socks = item.sockets_for_app(app_filter);
 
-            if ui.selectable_config(format!("##host_row_{}", item.first_seen_id)).size([width - 12.0, row_h - 3.0]).build() {
-                filter.selected_country = if filter.selected_country == Some(item.country_code) { None } else { Some(item.country_code) };
+            if ui
+                .selectable_config(format!("##host_row_{}", item.first_seen_id))
+                .size([width - 12.0, row_h - 3.0])
+                .build()
+            {
+                if let Some(owner_app) = item.stats.primary_app() {
+                    let is_same = filter
+                        .selected_app
+                        .as_deref()
+                        .is_some_and(|s| s.eq_ignore_ascii_case(owner_app));
+                    filter.selected_app = if is_same {
+                        None
+                    } else {
+                        Some(owner_app.to_string())
+                    };
+                }
+            }
+            if ui.is_item_hovered() {
+                let apps_list = if item.stats.app_names.is_empty() {
+                    String::from("Unknown")
+                } else {
+                    item.stats.app_names.join(", ")
+                };
+                ui.tooltip_text(format!(
+                    "Host: {}\nEndpoint: {} ({})\nCountry: {} [{}]\nApp(s): {}\nTraffic: {} ({} active sockets)\n\nClick to select application",
+                    item.display_title,
+                    item.ip_port_str,
+                    item.organization,
+                    item.country,
+                    item.country_code.code(),
+                    apps_list,
+                    format_bytes(bytes),
+                    active_socks
+                ));
             }
 
             let flag_offset = draw_flag_and_code(ui, [row_pos[0] + 4.0, row_pos[1] + 2.0], item.country_code);
@@ -318,7 +346,15 @@ fn render_usage_hosts_column(filter: &mut SharedFilterState, hosts: &[HostRecord
             dl.add_text([row_pos[0] + 4.0 + flag_offset, row_pos[1] + 2.0], [0.96f32, 0.97, 0.99, 1.0], &host_cut);
             dl.add_text([(row_pos[0] + width - data_w - 18.0).max(row_pos[0] + 120.0), row_pos[1] + 2.0], [0.75f32, 0.80, 0.88, 1.0], &data_str);
 
-            let ip_line = format!("{} · {} ({} active)", item.ip_port_str, item.organization, active_socks);
+            let owner_prefix = item
+                .stats
+                .primary_app()
+                .map(|a| format!("[{}] ", a))
+                .unwrap_or_default();
+            let ip_line = format!(
+                "{}{} · {} ({} act)",
+                owner_prefix, item.ip_port_str, item.organization, active_socks
+            );
             let ip_cut = truncate_str(&ip_line, ((width - 24.0) / 6.8).max(16.0) as usize);
             dl.add_text([row_pos[0] + 6.0, row_pos[1] + 17.0], [0.52f32, 0.68, 0.82, 1.0], &ip_cut);
 
@@ -337,14 +373,7 @@ fn render_usage_protocols_column(filter: &mut SharedFilterState, protocols: &[Pr
             .filter(|p| p.matches_app(app_filter) && filter.matches_scope(p.is_local))
             .collect();
 
-        filtered.sort_by(|a, b| match filter.sort_mode {
-            SortMode::StableOrder => a.first_seen_id.cmp(&b.first_seen_id),
-            SortMode::HighestTraffic => (b.bytes_for_app(app_filter) / (1024 * 256))
-                .cmp(&(a.bytes_for_app(app_filter) / (1024 * 256)))
-                .then_with(|| a.first_seen_id.cmp(&b.first_seen_id)),
-            SortMode::ActiveSockets => b.sockets_for_app(app_filter).cmp(&a.sockets_for_app(app_filter)).then_with(|| a.first_seen_id.cmp(&b.first_seen_id)),
-            SortMode::Alphabetical => a.code.cmp(b.code),
-        });
+        filtered.sort_by_key(|a| a.first_seen_id);
 
         ui.text_colored([0.96f32, 0.97, 0.99, 1.0], format!("Protocols ({})", filtered.len()));
         ui.separator();
@@ -378,18 +407,4 @@ fn render_usage_protocols_column(filter: &mut SharedFilterState, protocols: &[Pr
             ui.set_cursor_screen_pos([row_pos[0], row_pos[1] + row_h + 2.0]);
         }
     }) {}
-}
-
-fn render_usage_bottom_graph(filter: &SharedFilterState, snap: &NetworkSnapshot, ui: &Ui) {
-    let avail_w = ui.content_region_avail()[0].max(600.0);
-    let (down_hist, up_hist) = match &filter.selected_app {
-        Some(name) => snap
-            .apps
-            .iter()
-            .find(|a| a.name.eq_ignore_ascii_case(name))
-            .map(|a| (a.download_history.clone(), a.upload_history.clone()))
-            .unwrap_or_else(|| (vec![0.0; HISTORY_LEN], vec![0.0; HISTORY_LEN])),
-        None => (snap.download_history.clone(), snap.upload_history.clone()),
-    };
-    draw_dual_area_chart(ui, "##usage_dual_timeline", &down_hist, &up_hist, [avail_w, 54.0], true);
 }

@@ -50,6 +50,7 @@ impl WaterWallApp {
         let status = graph
             .load_from_disk(&mut filter.groups)
             .unwrap_or_else(|| String::from("Ready — Drag node onto rope to insert | Ctrl+Z: Undo | Ctrl+S: Save"));
+        graph.commit_network_state(&filter.groups);
         Self {
             should_exit: false,
             view_mode: ViewMode::Usage,

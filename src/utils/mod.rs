@@ -2,6 +2,7 @@ pub mod bpf;
 pub mod clipboard;
 pub mod format;
 pub mod parsers;
+pub mod privilege;
 
 pub use bpf::{
     bpf_attach_cgroup, bpf_create_slot_map, bpf_load_connect4_prog, bpf_load_connect6_prog,
@@ -16,3 +17,4 @@ pub use parsers::{
     extract_http_host, extract_tls_sni, parse_hex_ipv4, parse_hex_ipv6, parse_proxy_url,
     parse_socket_addr,
 };
+pub use privilege::{is_elevated, try_optional_sudo_on_startup};

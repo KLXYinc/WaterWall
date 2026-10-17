@@ -52,7 +52,23 @@ pub struct Link {
     pub from: i32,
     pub to: i32,
     pub flow_intensity: f32,
+    pub rope_kind: i32,
+    pub kind_synced: bool,
     pub label: String,
+}
+
+pub fn rope_kind_name(kind: i32) -> &'static str {
+    match kind.rem_euclid(8) {
+        0 => "Physics Cable (Speed & Volume)",
+        1 => "Hard Trace (90° & 45° Auto-Corner)",
+        2 => "Straight Taut Line",
+        3 => "Smooth Thermal Heatmap Cable",
+        4 => "Dual-Lane Split (Down ▼ / Up ▲)",
+        5 => "Real Packet Stream Pulses",
+        6 => "Live Oscilloscope Wave",
+        7 => "Multi-Strand Socket Fiber",
+        _ => "Physics Cable",
+    }
 }
 
 pub const fn pin_id(node_id: i32, slot: i32) -> i32 {

@@ -45,6 +45,7 @@ pub struct AppGroup {
 }
 
 /// Manages App Groups ("All Apps (Default)" + custom/category groups) and app -> group assignments.
+#[derive(Clone)]
 pub struct AppGroupManager {
     pub groups: Vec<AppGroup>,
     pub app_to_group: HashMap<String, usize>, // lowercase app_name -> group_id

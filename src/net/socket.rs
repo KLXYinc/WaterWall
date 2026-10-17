@@ -98,8 +98,10 @@ pub struct AppNetworkInfo {
     pub connections: Vec<ConnectionInfo>,
     pub upload_speed: f64,    // Bytes per second
     pub download_speed: f64,  // Bytes per second
+    pub packet_rate: f64,     // Real packets / I/O frames per second
     pub total_uploaded: u64,  // Total bytes
     pub total_downloaded: u64,// Total bytes
+    pub total_packets: u64,   // Total packets / frames
     pub download_history: Vec<f32>,
     pub upload_history: Vec<f32>,
     pub first_seen_id: u64,

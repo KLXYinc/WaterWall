@@ -21,6 +21,8 @@ pub struct ProcessMetadata {
     pub inodes: Vec<u64>,
     pub rchar: u64,
     pub wchar: u64,
+    pub syscr: u64,
+    pub syscw: u64,
 }
 
 pub fn parse_proc_net_file(path: &str, protocol: Protocol, is_v6: bool) -> Vec<ProcSocket> {
@@ -82,6 +84,10 @@ pub fn scan_all_sockets() -> Vec<ProcSocket> {
     all.extend(parse_proc_net_file("/proc/net/tcp6", Protocol::Tcp, true));
     all.extend(parse_proc_net_file("/proc/net/udp", Protocol::Udp, false));
     all.extend(parse_proc_net_file("/proc/net/udp6", Protocol::Udp, true));
+    all.extend(parse_proc_net_file("/proc/net/raw", Protocol::Udp, false));
+    all.extend(parse_proc_net_file("/proc/net/raw6", Protocol::Udp, true));
+    all.extend(parse_proc_net_file("/proc/net/icmp", Protocol::Udp, false));
+    all.extend(parse_proc_net_file("/proc/net/icmp6", Protocol::Udp, true));
     all
 }
 
@@ -138,9 +144,11 @@ pub fn scan_process_metadata() -> HashMap<u32, ProcessMetadata> {
             }
         }
 
-        // 5. I/O counters (/proc/[pid]/io)
+        // 5. I/O & packet/syscall counters (/proc/[pid]/io)
         let mut rchar = 0u64;
         let mut wchar = 0u64;
+        let mut syscr = 0u64;
+        let mut syscw = 0u64;
         let io_path = pid_path.join("io");
         if let Ok(io_content) = fs::read_to_string(&io_path) {
             for line in io_content.lines() {
@@ -148,6 +156,10 @@ pub fn scan_process_metadata() -> HashMap<u32, ProcessMetadata> {
                     rchar = rest.trim().parse::<u64>().unwrap_or(0);
                 } else if let Some(rest) = line.strip_prefix("wchar: ") {
                     wchar = rest.trim().parse::<u64>().unwrap_or(0);
+                } else if let Some(rest) = line.strip_prefix("syscr: ") {
+                    syscr = rest.trim().parse::<u64>().unwrap_or(0);
+                } else if let Some(rest) = line.strip_prefix("syscw: ") {
+                    syscw = rest.trim().parse::<u64>().unwrap_or(0);
                 }
             }
         }
@@ -162,6 +174,8 @@ pub fn scan_process_metadata() -> HashMap<u32, ProcessMetadata> {
                 inodes,
                 rchar,
                 wchar,
+                syscr,
+                syscw,
             },
         );
     }
@@ -172,11 +186,15 @@ pub fn scan_process_metadata() -> HashMap<u32, ProcessMetadata> {
 pub struct SystemNetDev {
     pub rx_bytes: u64,
     pub tx_bytes: u64,
+    pub rx_packets: u64,
+    pub tx_packets: u64,
 }
 
 pub fn read_system_net_dev() -> SystemNetDev {
     let mut rx = 0u64;
     let mut tx = 0u64;
+    let mut rx_pkts = 0u64;
+    let mut tx_pkts = 0u64;
 
     if let Ok(content) = fs::read_to_string("/proc/net/dev") {
         for line in content.lines().skip(2) {
@@ -190,12 +208,18 @@ pub fn read_system_net_dev() -> SystemNetDev {
             if let Some(rx_str) = parts.next() {
                 rx += rx_str.parse::<u64>().unwrap_or(0);
             }
-            // Skip 7 fields: packets errs drop fifo frame compressed multicast
-            for _ in 0..7 {
+            if let Some(rx_pkt_str) = parts.next() {
+                rx_pkts += rx_pkt_str.parse::<u64>().unwrap_or(0);
+            }
+            // Skip 6 fields: errs drop fifo frame compressed multicast
+            for _ in 0..6 {
                 parts.next();
             }
             if let Some(tx_str) = parts.next() {
                 tx += tx_str.parse::<u64>().unwrap_or(0);
+            }
+            if let Some(tx_pkt_str) = parts.next() {
+                tx_pkts += tx_pkt_str.parse::<u64>().unwrap_or(0);
             }
         }
     }
@@ -203,6 +227,8 @@ pub fn read_system_net_dev() -> SystemNetDev {
     SystemNetDev {
         rx_bytes: rx,
         tx_bytes: tx,
+        rx_packets: rx_pkts,
+        tx_packets: tx_pkts,
     }
 }
 
