@@ -348,7 +348,7 @@ impl Graph {
                 }
                 format!("Rope style: {} (Ctrl+S to save)", rope_kind_name(kind))
             }
-            ng::Event::RmbCanvas { .. } => String::new(),
+            ng::Event::CountryClicked { .. } | ng::Event::RmbCanvas { .. } => String::new(),
         }
     }
 

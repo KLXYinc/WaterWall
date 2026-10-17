@@ -9,6 +9,7 @@ pub enum Event {
     RmbCanvas { x: i32, y: i32 },
     InsertNode { node: i32, link: i32 },
     RopeKindChanged { link: i32, kind: i32 },
+    CountryClicked { code: [u8; 2] },
 }
 pub fn begin(ui: &Ui, id: &str, size: [f32; 2]) -> bool {
     unsafe { sys::igNG_Begin(ui.scratch_txt(id), size[0], size[1]) }
@@ -87,6 +88,26 @@ pub fn set_link_kind(link_id: i32, kind: i32) {
 pub fn get_link_kind(link_id: i32) -> i32 {
     unsafe { sys::igNG_GetLinkKind(link_id) }
 }
+pub fn clear_world_targets() {
+    unsafe { sys::igNG_ClearWorldTargets() }
+}
+pub fn push_world_target(
+    ui: &Ui,
+    code: [u8; 2],
+    intensity: f32,
+    pkt_rate: f32,
+    label: &str,
+) {
+    let code_u16 = ((code[0] as i32) << 8) | (code[1] as i32);
+    unsafe {
+        sys::igNG_PushWorldTarget(
+            code_u16,
+            intensity,
+            pkt_rate,
+            ui.scratch_txt(label),
+        )
+    }
+}
 pub fn pop_event() -> Option<Event> {
     let mut a = 0i32;
     let mut b = 0i32;
@@ -98,6 +119,9 @@ pub fn pop_event() -> Option<Event> {
         5 => Some(Event::RmbCanvas { x: a, y: b }),
         6 => Some(Event::InsertNode { node: a, link: b }),
         7 => Some(Event::RopeKindChanged { link: a, kind: b }),
+        8 => Some(Event::CountryClicked {
+            code: [((a >> 8) & 0xFF) as u8, (a & 0xFF) as u8],
+        }),
         _ => None,
     }
 }

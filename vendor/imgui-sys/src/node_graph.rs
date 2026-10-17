@@ -41,6 +41,13 @@ extern "C" {
     );
     pub fn igNG_SetLinkKind(link_id: c_int, kind: c_int);
     pub fn igNG_GetLinkKind(link_id: c_int) -> c_int;
+    pub fn igNG_ClearWorldTargets();
+    pub fn igNG_PushWorldTarget(
+        country_code_u16: c_int,
+        intensity: c_float,
+        pkt_rate: c_float,
+        label: *const c_char,
+    );
     pub fn igNG_PopEvent(a: *mut c_int, b: *mut c_int) -> c_int;
     pub fn igNG_SetPan(x: c_float, y: c_float);
     pub fn igNG_GetPan(out_xy: *mut c_float);
