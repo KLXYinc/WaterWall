@@ -1,6 +1,6 @@
 [package]
 name = "waterwall"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "WaterWall — Visual Linux firewall, per-application network inspector, and interactive node-graph traffic router built with Rust and Dear ImGui"
 license = "MIT OR Apache-2.0"
