@@ -7,16 +7,7 @@ use crate::net::{
     format_bytes, format_speed, AppNetworkInfo, CountryCode, NetworkMonitor, NetworkSnapshot,
 };
 
-/// Safe UTF-8 character truncation (never panics on multi-byte characters).
-pub fn truncate_str(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        s.to_string()
-    } else {
-        let take_n = max_chars.saturating_sub(2).max(1);
-        let prefix: String = s.chars().take(take_n).collect();
-        format!("{}..", prefix)
-    }
-}
+pub use crate::utils::truncate_str;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScopeFilter {
@@ -54,6 +45,7 @@ pub struct SharedFilterState {
     pub selected_protocol: Option<&'static str>,
     pub groups: AppGroupManager,
     pub new_group_name_buf: String,
+    pub request_flow_graph: bool,
 }
 
 impl Default for SharedFilterState {
@@ -67,11 +59,42 @@ impl Default for SharedFilterState {
             selected_protocol: None,
             groups: AppGroupManager::new(),
             new_group_name_buf: String::new(),
+            request_flow_graph: false,
         }
     }
 }
 
 impl SharedFilterState {
+    pub fn matches_scope(&self, is_local: bool) -> bool {
+        !matches!(
+            (self.scope, is_local),
+            (ScopeFilter::RemoteOnly, true) | (ScopeFilter::LocalOnly, false)
+        )
+    }
+
+    pub fn sort_apps(&self, apps: &mut [&AppNetworkInfo]) {
+        match self.sort_mode {
+            SortMode::StableOrder => apps.sort_by_key(|a| a.first_seen_id),
+            SortMode::HighestTraffic => apps.sort_by(|a, b| {
+                let ta = (a.total_downloaded + a.total_uploaded) / (1024 * 64);
+                let tb = (b.total_downloaded + b.total_uploaded) / (1024 * 64);
+                tb.cmp(&ta).then_with(|| a.first_seen_id.cmp(&b.first_seen_id))
+            }),
+            SortMode::ActiveSockets => apps.sort_by(|a, b| {
+                b.connections
+                    .len()
+                    .cmp(&a.connections.len())
+                    .then_with(|| a.first_seen_id.cmp(&b.first_seen_id))
+            }),
+            SortMode::Alphabetical => apps.sort_by(|a, b| {
+                a.name
+                    .to_lowercase()
+                    .cmp(&b.name.to_lowercase())
+                    .then_with(|| a.first_seen_id.cmp(&b.first_seen_id))
+            }),
+        }
+    }
+
     pub fn matches_app(&self, app: &AppNetworkInfo) -> bool {
         match self.scope {
             ScopeFilter::All => {}
@@ -134,7 +157,7 @@ pub fn render_shared_filter_bar(
     ui.same_line_with_spacing(0.0, 10.0);
     ui.text_disabled("Order:");
     ui.same_line();
-    if ui.button(&format!(" {} [v] ", filter.sort_mode.label())) {
+    if ui.button(format!(" {} [v] ", filter.sort_mode.label())) {
         ui.open_popup("shared_sort_popup");
     }
     ui.popup("shared_sort_popup", || {
@@ -168,7 +191,7 @@ pub fn render_shared_filter_bar(
     if let Some(app_name) = filter.selected_app.clone() {
         ui.same_line_with_spacing(0.0, 8.0);
         let _c = ui.push_style_color(StyleColor::Button, [0.12f32, 0.48, 0.38, 0.95]);
-        if ui.button(&format!(" App: {} [x] ", truncate_str(&app_name, 14))) {
+        if ui.button(format!(" App: {} [x] ", truncate_str(&app_name, 14))) {
             filter.selected_app = None;
         }
     }
@@ -176,7 +199,7 @@ pub fn render_shared_filter_bar(
     if let Some(cc) = filter.selected_country {
         ui.same_line_with_spacing(0.0, 6.0);
         let _c = ui.push_style_color(StyleColor::Button, [0.22f32, 0.38, 0.65, 0.95]);
-        if ui.button(&format!(" {} [x] ", cc.code())) {
+        if ui.button(format!(" {} [x] ", cc.code())) {
             filter.selected_country = None;
         }
     }
@@ -184,7 +207,7 @@ pub fn render_shared_filter_bar(
     if let Some(proto) = filter.selected_protocol {
         ui.same_line_with_spacing(0.0, 6.0);
         let _c = ui.push_style_color(StyleColor::Button, [0.45f32, 0.28, 0.65, 0.95]);
-        if ui.button(&format!(" {} [x] ", proto)) {
+        if ui.button(format!(" {} [x] ", proto)) {
             filter.selected_protocol = None;
         }
     }
@@ -318,7 +341,7 @@ pub fn draw_dual_area_chart(
         dl.add_text(
             [inner_x0 + 4.0, inner_y0 + 2.0],
             [0.58f32, 0.65, 0.75, 0.90],
-            &format!("Peak: {}", format_speed(peak as f64)),
+            format!("Peak: {}", format_speed(peak as f64)),
         );
 
         let n = down_samples.len().max(up_samples.len());
@@ -347,7 +370,7 @@ pub fn draw_dual_area_chart(
         let secs_ago = ((n - 1).saturating_sub(idx) as f32 * 0.8).round() as u32;
         let dv = down_samples.get(idx).copied().unwrap_or(0.0) as f64;
         let uv = up_samples.get(idx).copied().unwrap_or(0.0) as f64;
-        ui.tooltip_text(&format!(
+        ui.tooltip_text(format!(
             "Time: -{}s ago\nDownload (IN):  {}\nUpload (OUT):   {}",
             secs_ago,
             format_speed(dv),

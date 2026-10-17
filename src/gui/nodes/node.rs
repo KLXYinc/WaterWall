@@ -3,7 +3,7 @@ use imgui::Ui;
 
 use super::item::{Item, WAVE_SAMPLES};
 use super::NodeKind;
-use crate::gui::graphics::read_system_clipboard;
+use crate::utils::{parse_proxy_url, read_system_clipboard};
 
 #[derive(Clone)]
 pub struct Node {
@@ -257,80 +257,5 @@ impl Node {
         }
         ng::node_end();
         self.normalize_proxy_fields(ui);
-    }
-}
-
-/// Parses proxy strings in formats:
-/// - `http://user:pass@host:port` / `https://user:pass@host:port` / `socks5://user:pass@host:port`
-/// - `user:pass@host:port`
-/// - `host:port:user:pass`
-pub fn parse_proxy_url(raw: &str) -> Option<(Option<usize>, String, String, String)> {
-    let mut s = raw.trim();
-    if s.is_empty() {
-        return None;
-    }
-
-    let mut proto_idx = None;
-    if let Some((scheme, rest)) = s.split_once("://") {
-        let sc = scheme.to_lowercase();
-        proto_idx = match sc.as_str() {
-            "http" | "https" => Some(1), // HTTP CONNECT
-            "socks5" | "socks5h" | "socks" => Some(0), // SOCKS5
-            "ss" | "shadowsocks" => Some(3),
-            _ => None,
-        };
-        s = rest.trim_end_matches('/');
-    } else {
-        s = s.trim_end_matches('/');
-    }
-
-    // Format A: `user:pass@host:port` (split on the last `@` in case password contains special chars)
-    if let Some((auth, host_port)) = s.rsplit_once('@') {
-        let host_port = host_port.trim().to_string();
-        if host_port.is_empty() {
-            return None;
-        }
-        let (user, pass) = match auth.split_once(':') {
-            Some((u, p)) => (u.to_string(), p.to_string()),
-            None => (auth.to_string(), String::new()),
-        };
-        return Some((proto_idx, host_port, user, pass));
-    }
-
-    // Format B: `host:port:user:pass` (4 colon-separated parts)
-    let parts: Vec<&str> = s.splitn(4, ':').collect();
-    if parts.len() == 4 && parts[1].parse::<u16>().is_ok() {
-        let host_port = format!("{}:{}", parts[0], parts[1]);
-        return Some((
-            proto_idx,
-            host_port,
-            parts[2].to_string(),
-            parts[3].to_string(),
-        ));
-    }
-
-    // Format C: `scheme://host:port` without credentials
-    if proto_idx.is_some() && s.contains(':') {
-        return Some((proto_idx, s.to_string(), String::new(), String::new()));
-    }
-
-    None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_iproyal_proxy_url() {
-        let input = "http://6Rnh55e5IfbFB38g:cJUBMuk8d9aKDp1v_country-de_session-1c3Xnf55_lifetime-168h@geo.iproyal.com:12321";
-        let (proto, srv, user, pass) = parse_proxy_url(input).expect("should parse proxy URL");
-        assert_eq!(proto, Some(1)); // HTTP CONNECT
-        assert_eq!(srv, "geo.iproyal.com:12321");
-        assert_eq!(user, "6Rnh55e5IfbFB38g");
-        assert_eq!(
-            pass,
-            "cJUBMuk8d9aKDp1v_country-de_session-1c3Xnf55_lifetime-168h"
-        );
     }
 }

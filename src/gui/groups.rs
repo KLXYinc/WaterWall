@@ -211,7 +211,7 @@ pub fn render_app_group_selector(
         ],
     );
     let _txt_col = ui.push_style_color(StyleColor::Text, cur_group.color);
-    if ui.button(&format!(" Flow Group: {} [v]##gbtn_{} ", cur_group.name, id_suffix)) {
+    if ui.button(format!(" Flow Group: {} [v]##gbtn_{} ", cur_group.name, id_suffix)) {
         ui.open_popup(&popup_id);
     }
     drop(_txt_col);
@@ -230,14 +230,14 @@ pub fn render_app_group_selector(
             let is_cur = g.id == cur_group.id;
             ui.text_colored(g.color, if is_cur { "[*]" } else { "[ ]" });
             ui.same_line();
-            if ui.menu_item(&format!("{}##gitem_{}_{}", g.name, g.id, id_suffix)) {
+            if ui.menu_item(format!("{}##gitem_{}_{}", g.name, g.id, id_suffix)) {
                 groups.assign_app(app_name, g.id);
                 changed_to = Some(g.id);
             }
         }
 
         ui.separator();
-        if ui.menu_item(&format!(
+        if ui.menu_item(format!(
             "+ Isolate '{}' as Separate Group Node##iso_{}",
             app_name, id_suffix
         )) {
@@ -248,11 +248,11 @@ pub fn render_app_group_selector(
         ui.separator();
         ui.text_disabled("New Group Node:");
         ui.set_next_item_width(145.0);
-        ui.input_text(&format!("##new_grp_{}", id_suffix), new_group_buf)
+        ui.input_text(format!("##new_grp_{}", id_suffix), new_group_buf)
             .hint("Group name...")
             .build();
         ui.same_line();
-        if ui.button(&format!("Create##mk_grp_{}", id_suffix)) && !new_group_buf.trim().is_empty()
+        if ui.button(format!("Create##mk_grp_{}", id_suffix)) && !new_group_buf.trim().is_empty()
         {
             let gid = groups.create_custom_group(new_group_buf);
             groups.assign_app(app_name, gid);
@@ -301,7 +301,7 @@ pub fn render_group_apps_editor_popup(
 
         let list_w = 340.0;
         if let Some(_c) = ui
-            .child_window(&format!("grp_members_{}", group_id))
+            .child_window(format!("grp_members_{}", group_id))
             .size([list_w, 150.0])
             .build(|| {
                 if members.is_empty() {
@@ -328,12 +328,12 @@ pub fn render_group_apps_editor_popup(
                     if group_id != 0 {
                         ui.set_cursor_screen_pos([row_pos[0] + list_w - 76.0, row_pos[1] + 1.0]);
                         let _c = ui.push_style_color(StyleColor::Button, [0.55f32, 0.18, 0.22, 0.90]);
-                        if ui.button_with_size(&format!("Remove##rm_{}", app.pid), [64.0, 21.0]) {
+                        if ui.button_with_size(format!("Remove##rm_{}", app.pid), [64.0, 21.0]) {
                             groups.assign_app(&app.name, 0);
                         }
                     } else {
                         ui.set_cursor_screen_pos([row_pos[0] + list_w - 86.0, row_pos[1] + 1.0]);
-                        if ui.button_with_size(&format!("Isolate##iso_m_{}", app.pid), [74.0, 21.0]) {
+                        if ui.button_with_size(format!("Isolate##iso_m_{}", app.pid), [74.0, 21.0]) {
                             groups.isolate_app_into_own_group(&app.name);
                         }
                     }
@@ -349,7 +349,7 @@ pub fn render_group_apps_editor_popup(
                 format!("+ Add Apps to '{}' ({}):", group.name, others.len()),
             );
             if let Some(_c) = ui
-                .child_window(&format!("grp_others_{}", group_id))
+                .child_window(format!("grp_others_{}", group_id))
                 .size([list_w, 150.0])
                 .build(|| {
                     for app in &others {
@@ -371,7 +371,7 @@ pub fn render_group_apps_editor_popup(
 
                         ui.set_cursor_screen_pos([row_pos[0] + list_w - 68.0, row_pos[1] + 1.0]);
                         let _c = ui.push_style_color(StyleColor::Button, [0.15f32, 0.52, 0.38, 0.95]);
-                        if ui.button_with_size(&format!("+ Add##add_{}", app.pid), [56.0, 21.0]) {
+                        if ui.button_with_size(format!("+ Add##add_{}", app.pid), [56.0, 21.0]) {
                             groups.assign_app(&app.name, group_id);
                         }
                         ui.set_cursor_screen_pos([row_pos[0], row_pos[1] + row_h]);

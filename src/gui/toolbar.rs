@@ -1,9 +1,9 @@
 use imgui::{Key, StyleColor, Ui};
 
 use super::app::{ViewMode, WaterWallApp};
-use crate::net::{format_bytes, format_speed};
+use crate::net::{format_bytes, format_speed, NetworkSnapshot};
 
-pub fn render_toolbar(app: &mut WaterWallApp, ui: &Ui) {
+pub fn render_toolbar(app: &mut WaterWallApp, snap: &NetworkSnapshot, ui: &Ui) {
     let active_color = [0.15f32, 0.50, 0.85, 1.0];
 
     // Keyboard shortcuts 1..=5 when no text input is active
@@ -20,8 +20,6 @@ pub fn render_toolbar(app: &mut WaterWallApp, ui: &Ui) {
             app.view_mode = ViewMode::DnsAndAlerts;
         }
     }
-
-    let snap = app.monitor.snapshot();
 
     ui.text_colored([0.96f32, 0.97, 0.99, 1.0], "WaterWall");
     ui.same_line();

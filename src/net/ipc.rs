@@ -12,6 +12,8 @@ use std::time::{Duration, Instant};
 use super::ebpf_redirect::{resolve_pids_for_app_names, sync_ebpf_proxied_pids};
 use super::killer;
 use super::proxy_relay::{LocalProxyRelay, UpstreamProxyConfig, UpstreamProxyKind};
+use crate::gui::nodes::pin_id;
+use crate::utils::graph_save_candidates;
 
 pub const PRIMARY_SOCK_PATH: &str = "/run/waterwall.sock";
 pub const FALLBACK_SOCK_PATH: &str = "/tmp/waterwall.sock";
@@ -105,27 +107,10 @@ pub fn run_daemon_server(running: Arc<AtomicBool>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Reads saved `flow_graph.cfg` files across `/home/*/.config/waterwall/flow_graph.cfg`
-/// so the root daemon automatically hooks proxied apps (like `librewolf`) and loads proxy credentials!
-pub fn scan_saved_config_proxied_pids() -> Vec<u32> {
-    scan_saved_config_proxied_state().0
-}
-
+/// Reads saved `flow_graph.cfg` files across user config directories
+/// so the root daemon automatically hooks proxied apps and loads proxy credentials.
 pub fn scan_saved_config_proxied_state() -> (Vec<u32>, Option<UpstreamProxyConfig>) {
-    let mut candidate_paths = vec![PathBuf::from("waterwall_graph.cfg")];
-    if let Ok(home) = std::env::var("HOME") {
-        candidate_paths.push(PathBuf::from(format!(
-            "{}/.config/waterwall/flow_graph.cfg",
-            home
-        )));
-    }
-    if let Ok(entries) = fs::read_dir("/home") {
-        for e in entries.flatten() {
-            candidate_paths.push(e.path().join(".config/waterwall/flow_graph.cfg"));
-        }
-    }
-
-    for path in candidate_paths {
+    for path in graph_save_candidates() {
         if let Ok(content) = fs::read_to_string(&path) {
             let mut proxy_node_ids: HashSet<i32> = HashSet::new();
             let mut group_node_to_gid: Vec<(i32, usize)> = Vec::new();
@@ -192,18 +177,18 @@ pub fn scan_saved_config_proxied_state() -> (Vec<u32>, Option<UpstreamProxyConfi
             }
 
             let mut proxied_gids: HashSet<usize> = HashSet::new();
-            for (gnid, gid) in &group_node_to_gid {
-                let mut cur_out_pin = gnid * 100 + 1;
+            for &(gnid, gid) in &group_node_to_gid {
+                let mut cur_out_pin = pin_id(gnid, 1);
                 for _ in 0..5 {
                     let Some(&(_, to_pin)) = links.iter().find(|&&(f, _)| f == cur_out_pin) else {
                         break;
                     };
                     let next_nid = to_pin / 100;
                     if proxy_node_ids.contains(&next_nid) {
-                        proxied_gids.insert(*gid);
+                        proxied_gids.insert(gid);
                         break;
                     }
-                    cur_out_pin = next_nid * 100 + 2;
+                    cur_out_pin = pin_id(next_nid, 2);
                 }
             }
 

@@ -5,7 +5,8 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
 
-use super::ebpf_redirect::lookup_orig_dst_slot;
+use super::ebpf_redirect::unmap_ebpf_addr;
+use crate::utils::{base64_encode, extract_http_host, extract_tls_sni};
 
 pub const LOCAL_RELAY_PORT: u16 = 19180;
 
@@ -39,7 +40,6 @@ impl Default for UpstreamProxyConfig {
 pub struct LocalProxyRelay {
     config: Arc<RwLock<UpstreamProxyConfig>>,
     relayed_count: Arc<AtomicU64>,
-    last_status: Arc<RwLock<String>>,
 }
 
 impl Default for LocalProxyRelay {
@@ -52,7 +52,6 @@ impl LocalProxyRelay {
     pub fn new() -> Self {
         let config = Arc::new(RwLock::new(UpstreamProxyConfig::default()));
         let relayed_count = Arc::new(AtomicU64::new(0));
-        let last_status = Arc::new(RwLock::new(String::from("Relay Standby")));
 
         // 1. Spawn IPv4 relay listener on 0.0.0.0:19180 (accepts 127.100.<lo>.<hi>:19180)
         spawn_listener_thread(
@@ -60,7 +59,6 @@ impl LocalProxyRelay {
             "waterwall-relay-v4",
             Arc::clone(&config),
             Arc::clone(&relayed_count),
-            Arc::clone(&last_status),
         );
 
         // 2. Spawn IPv6 loopback relay listener on [::1]:19180 (accepts connect6 redirects)
@@ -69,13 +67,11 @@ impl LocalProxyRelay {
             "waterwall-relay-v6",
             Arc::clone(&config),
             Arc::clone(&relayed_count),
-            Arc::clone(&last_status),
         );
 
         Self {
             config,
             relayed_count,
-            last_status,
         }
     }
 
@@ -90,10 +86,6 @@ impl LocalProxyRelay {
     pub fn relayed_connections(&self) -> u64 {
         self.relayed_count.load(Ordering::Relaxed)
     }
-
-    pub fn status(&self) -> String {
-        self.last_status.read().map(|s| s.clone()).unwrap_or_default()
-    }
 }
 
 fn spawn_listener_thread(
@@ -101,7 +93,6 @@ fn spawn_listener_thread(
     thread_name: &str,
     cfg_clone: Arc<RwLock<UpstreamProxyConfig>>,
     cnt_clone: Arc<AtomicU64>,
-    st_clone: Arc<RwLock<String>>,
 ) {
     let _ = thread::Builder::new()
         .name(thread_name.to_string())
@@ -120,13 +111,8 @@ fn spawn_listener_thread(
                     continue;
                 }
                 let cnt = Arc::clone(&cnt_clone);
-                let st = Arc::clone(&st_clone);
                 thread::spawn(move || {
-                    if let Err(err) = handle_relayed_client(incoming, &cfg, &cnt, &st) {
-                        if let Ok(mut s) = st.write() {
-                            *s = format!("Proxy Err: {}", err);
-                        }
-                    }
+                    let _ = handle_relayed_client(incoming, &cfg, &cnt);
                 });
             }
         });
@@ -136,7 +122,6 @@ fn handle_relayed_client(
     mut client: TcpStream,
     cfg: &UpstreamProxyConfig,
     cnt: &AtomicU64,
-    status: &RwLock<String>,
 ) -> Result<(), String> {
     let _ = client.set_nodelay(true);
 
@@ -207,10 +192,7 @@ fn handle_relayed_client(
         let _ = upstream.flush();
     }
 
-    let total = cnt.fetch_add(1, Ordering::Relaxed) + 1;
-    if let Ok(mut st) = status.write() {
-        *st = format!("Tunneled #{} -> {}", total, target_host_port);
-    }
+    cnt.fetch_add(1, Ordering::Relaxed);
 
     // 6. Bidirectional TCP stream forwarding
     let mut client_reader = client.try_clone().map_err(|e| e.to_string())?;
@@ -227,102 +209,7 @@ fn handle_relayed_client(
 }
 
 fn resolve_original_destination(client: &TcpStream) -> Option<SocketAddr> {
-    if let Ok(local) = client.local_addr() {
-        let v4_opt = match local.ip() {
-            IpAddr::V4(v4) => Some(v4),
-            IpAddr::V6(v6) => v6.to_ipv4_mapped(),
-        };
-        if let Some(v4) = v4_opt {
-            let oct = v4.octets();
-            if oct[0] == 127 && oct[1] == 100 {
-                let slot = (oct[2] as u32) | ((oct[3] as u32) << 8);
-                if let Some(dst) = lookup_orig_dst_slot(slot) {
-                    return Some(SocketAddr::V4(dst));
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Extracts the Server Name Indication (SNI) hostname from a TLS ClientHello packet.
-pub fn extract_tls_sni(buf: &[u8]) -> Option<String> {
-    // TLS record header: 0x16 (Handshake), 0x03 0x01..0x03, 2-byte length
-    if buf.len() < 43 || buf[0] != 0x16 || buf[1] != 0x03 {
-        return None;
-    }
-    // Handshake type 0x01 (ClientHello) at offset 5
-    if buf[5] != 0x01 {
-        return None;
-    }
-    // Skip: 5 (record hdr) + 4 (handshake hdr) + 2 (client version) + 32 (random) = 43
-    let mut pos = 43;
-    if pos >= buf.len() {
-        return None;
-    }
-    // Session ID
-    let sess_len = buf[pos] as usize;
-    pos += 1 + sess_len;
-    if pos + 2 > buf.len() {
-        return None;
-    }
-    // Cipher Suites
-    let suites_len = u16::from_be_bytes([buf[pos], buf[pos + 1]]) as usize;
-    pos += 2 + suites_len;
-    if pos + 1 > buf.len() {
-        return None;
-    }
-    // Compression Methods
-    let comp_len = buf[pos] as usize;
-    pos += 1 + comp_len;
-    if pos + 2 > buf.len() {
-        return None;
-    }
-    // Extensions length
-    let ext_total_len = u16::from_be_bytes([buf[pos], buf[pos + 1]]) as usize;
-    pos += 2;
-    let ext_end = (pos + ext_total_len).min(buf.len());
-
-    while pos + 4 <= ext_end {
-        let ext_type = u16::from_be_bytes([buf[pos], buf[pos + 1]]);
-        let ext_len = u16::from_be_bytes([buf[pos + 2], buf[pos + 3]]) as usize;
-        pos += 4;
-        if pos + ext_len > ext_end {
-            break;
-        }
-        if ext_type == 0x0000 && ext_len >= 5 {
-            // server_name extension: 2-byte list len, 1-byte name_type (0=host_name), 2-byte name_len
-            let name_type = buf[pos + 2];
-            let name_len = u16::from_be_bytes([buf[pos + 3], buf[pos + 4]]) as usize;
-            if name_type == 0 && pos + 5 + name_len <= pos + ext_len {
-                if let Ok(sni) = std::str::from_utf8(&buf[pos + 5..pos + 5 + name_len]) {
-                    if !sni.is_empty() {
-                        return Some(sni.to_string());
-                    }
-                }
-            }
-        }
-        pos += ext_len;
-    }
-    None
-}
-
-/// Extracts the `Host:` header from an HTTP request.
-pub fn extract_http_host(buf: &[u8]) -> Option<String> {
-    let s = std::str::from_utf8(&buf[..buf.len().min(1024)]).ok()?;
-    for line in s.lines().skip(1) {
-        let line = line.trim();
-        if line.is_empty() {
-            break;
-        }
-        if let Some(rest) = line.strip_prefix("Host:").or_else(|| line.strip_prefix("host:")) {
-            let h = rest.trim();
-            if !h.is_empty() {
-                return Some(h.to_string());
-            }
-        }
-    }
-    None
+    client.local_addr().ok().and_then(unmap_ebpf_addr)
 }
 
 fn handshake_http_connect(
@@ -435,22 +322,6 @@ fn handshake_socks5(
     let mut discard = vec![0u8; skip_len];
     let _ = stream.read_exact(&mut discard);
     Ok(())
-}
-
-pub fn base64_encode(input: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
-    for chunk in input.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
-        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(TABLE[((n >> 18) & 0x3F) as usize] as char);
-        out.push(TABLE[((n >> 12) & 0x3F) as usize] as char);
-        out.push(if chunk.len() > 1 { TABLE[((n >> 6) & 0x3F) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { TABLE[(n & 0x3F) as usize] as char } else { '=' });
-    }
-    out
 }
 
 #[cfg(test)]

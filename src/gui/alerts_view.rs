@@ -4,22 +4,17 @@ use super::flags::draw_flag_and_code;
 use super::groups::render_app_group_selector;
 use super::widgets::{render_shared_filter_bar, truncate_str, SharedFilterState};
 use crate::net::{
-    classify_ip_location_with_domain, format_bytes, DnsEvent, NetworkMonitor, SecurityAlert,
+    classify_ip_location_with_domain, format_bytes, DnsEvent, NetworkMonitor, NetworkSnapshot,
+    SecurityAlert,
 };
 
-#[derive(Default)]
-pub struct AlertsViewState {
-    pub open_flow_graph: bool,
-}
-
 pub fn render_dns_and_alerts_view(
-    state: &mut AlertsViewState,
     filter: &mut SharedFilterState,
+    snap: &NetworkSnapshot,
     monitor: &NetworkMonitor,
     ui: &Ui,
 ) {
-    let snap = monitor.snapshot();
-    render_shared_filter_bar(filter, &snap, monitor, ui);
+    render_shared_filter_bar(filter, snap, monitor, ui);
 
     ui.spacing();
     ui.separator();
@@ -61,7 +56,7 @@ pub fn render_dns_and_alerts_view(
         );
         ui.same_line();
         if ui.button(" [Open Flow Graph] ") {
-            state.open_flow_graph = true;
+            filter.request_flow_graph = true;
         }
     }
 
@@ -143,7 +138,7 @@ fn render_dns_tracker_panel(
                 }
 
                 if ui
-                    .selectable_config(&format!("##dns_ev_{}", ev.id))
+                    .selectable_config(format!("##dns_ev_{}", ev.id))
                     .size([width - 12.0, row_h - 2.0])
                     .build()
                 {
@@ -238,7 +233,7 @@ fn render_security_alerts_panel(
                 }
 
                 if ui
-                    .selectable_config(&format!("##sec_alert_{}", alert.id))
+                    .selectable_config(format!("##sec_alert_{}", alert.id))
                     .size([width - 12.0, row_h - 2.0])
                     .build()
                 {

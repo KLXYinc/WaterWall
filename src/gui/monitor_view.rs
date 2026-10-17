@@ -5,31 +5,30 @@ use super::groups::{app_signature_color, render_app_group_selector};
 use super::icons::IconManager;
 use super::widgets::{
     draw_app_icon_or_badge, draw_dual_area_chart, render_shared_filter_bar, truncate_str,
-    SharedFilterState, SortMode,
+    SharedFilterState,
 };
 use crate::net::{
     classify_ip_location_with_domain, classify_traffic_type, format_bytes,
     terminate_single_socket, terminate_sockets, AppNetworkInfo, ConnectionInfo, CountryCode,
-    NetworkMonitor, SocketState, HISTORY_LEN,
+    NetworkMonitor, NetworkSnapshot, SocketState, HISTORY_LEN,
 };
 
 #[derive(Default)]
 pub struct MonitorViewState {
     pub selected_pid: Option<u32>,
-    pub open_flow_graph: bool,
     pub last_action_status: Option<String>,
 }
 
 pub fn render_firewall_split_view(
     state: &mut MonitorViewState,
     filter: &mut SharedFilterState,
+    snapshot: &NetworkSnapshot,
     monitor: &NetworkMonitor,
     icon_manager: &mut IconManager,
     gl: &glow::Context,
     ui: &Ui,
 ) {
-    let snapshot = monitor.snapshot();
-    render_shared_filter_bar(filter, &snapshot, monitor, ui);
+    render_shared_filter_bar(filter, snapshot, monitor, ui);
 
     ui.spacing();
     ui.separator();
@@ -40,21 +39,7 @@ pub fn render_firewall_split_view(
         .iter()
         .filter(|app| filter.matches_app(app))
         .collect();
-
-    match filter.sort_mode {
-        SortMode::StableOrder => filtered_apps.sort_by(|a, b| a.first_seen_id.cmp(&b.first_seen_id)),
-        SortMode::HighestTraffic => filtered_apps.sort_by(|a, b| {
-            let ta = (a.total_downloaded + a.total_uploaded) / (1024 * 64);
-            let tb = (b.total_downloaded + b.total_uploaded) / (1024 * 64);
-            tb.cmp(&ta).then_with(|| a.first_seen_id.cmp(&b.first_seen_id))
-        }),
-        SortMode::ActiveSockets => filtered_apps.sort_by(|a, b| {
-            b.connections.len().cmp(&a.connections.len()).then_with(|| a.first_seen_id.cmp(&b.first_seen_id))
-        }),
-        SortMode::Alphabetical => filtered_apps.sort_by(|a, b| {
-            a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.first_seen_id.cmp(&b.first_seen_id))
-        }),
-    }
+    filter.sort_apps(&mut filtered_apps);
 
     if let Some(sel_name) = &filter.selected_app {
         if let Some(found) = filtered_apps.iter().find(|a| a.name.eq_ignore_ascii_case(sel_name)) {
@@ -73,25 +58,23 @@ pub fn render_firewall_split_view(
     let right_w = (avail[0] - left_w - 16.0).max(320.0);
     let view_h = avail[1].max(300.0);
 
-    render_apps_left_panel(state, filter, &filtered_apps, icon_manager, gl, left_w, view_h, ui);
+    render_apps_left_panel(state, filter, &filtered_apps, icon_manager, gl, [left_w, view_h], ui);
     ui.same_line();
 
     let selected_app = filtered_apps
         .iter()
         .find(|a| Some(a.pid) == state.selected_pid)
         .copied();
-    render_sockets_right_panel(state, filter, selected_app, icon_manager, gl, right_w, view_h, ui);
+    render_sockets_right_panel(state, filter, selected_app, icon_manager, gl, [right_w, view_h], ui);
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_apps_left_panel(
     state: &mut MonitorViewState,
     filter: &mut SharedFilterState,
     apps: &[&AppNetworkInfo],
     icon_manager: &mut IconManager,
     gl: &glow::Context,
-    width: f32,
-    height: f32,
+    [width, height]: [f32; 2],
     ui: &Ui,
 ) {
     if let Some(_child) = ui
@@ -144,7 +127,7 @@ fn render_apps_left_panel(
                 let text_x = row_pos[0] + 42.0;
                 ui.set_cursor_screen_pos([row_pos[0] + 6.0, row_pos[1] + 2.0]);
                 if ui
-                    .selectable_config(&format!("##fw_sel_{}", app.pid))
+                    .selectable_config(format!("##fw_sel_{}", app.pid))
                     .selected(is_selected)
                     .size([width - 18.0, row_h - 4.0])
                     .build()
@@ -192,15 +175,13 @@ fn render_apps_left_panel(
     {}
 }
 
-#[allow(clippy::too_many_arguments)]
 fn render_sockets_right_panel(
     state: &mut MonitorViewState,
     filter: &mut SharedFilterState,
     selected: Option<&AppNetworkInfo>,
     icon_manager: &mut IconManager,
     gl: &glow::Context,
-    width: f32,
-    height: f32,
+    [width, height]: [f32; 2],
     ui: &Ui,
 ) {
     if let Some(_child) = ui
@@ -219,7 +200,7 @@ fn render_sockets_right_panel(
             draw_app_icon_or_badge(ui, icon_manager, gl, app, header_pos, 36.0);
 
             ui.set_cursor_screen_pos([header_pos[0] + 46.0, header_pos[1]]);
-            ui.text_colored([0.96f32, 0.97, 0.99, 1.0], &app.display_name());
+            ui.text_colored([0.96f32, 0.97, 0.99, 1.0], app.display_name());
             ui.same_line();
             ui.text_disabled(format!("(PIDs: {:?})", &app.pids[..app.pids.len().min(5)]));
 
@@ -238,10 +219,10 @@ fn render_sockets_right_panel(
             );
             ui.same_line();
             if ui.button(" [Configure Group Nodes in Flow Graph] ") {
-                state.open_flow_graph = true;
+                filter.request_flow_graph = true;
             }
             ui.same_line();
-            if ui.button(&format!(" [Drop Active Sockets ({})] ", app.connections.len())) {
+            if ui.button(format!(" [Drop Active Sockets ({})] ", app.connections.len())) {
                 let killed = terminate_sockets(&app.connections);
                 state.last_action_status = Some(format!(
                     "Terminated {} socket(s) for '{}'",
@@ -355,7 +336,7 @@ fn render_sockets_right_panel(
 
                 ui.set_cursor_screen_pos([row_pos[0] + graph_w - drop_btn_w - 8.0, row_pos[1] + 5.0]);
                 let _d_col = ui.push_style_color(StyleColor::Button, [0.55f32, 0.18, 0.20, 0.90]);
-                if ui.button_with_size(&format!("Drop##drop_{}_{}", conn.inode, idx), [drop_btn_w, 23.0]) {
+                if ui.button_with_size(format!("Drop##drop_{}_{}", conn.inode, idx), [drop_btn_w, 23.0]) {
                     terminate_single_socket(&conn.remote_addr);
                     state.last_action_status = Some(format!("Dropped socket {}", conn.remote_addr));
                 }

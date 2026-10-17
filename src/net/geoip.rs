@@ -1,6 +1,7 @@
 use std::net::IpAddr;
 
 use super::protocol::CountryCode;
+use super::socket::is_remote_ip;
 
 /// Information about a destination IP address: CountryCode, Country Name, and Organization/ASN
 #[derive(Clone, Debug)]
@@ -11,49 +12,20 @@ pub struct IpLocationInfo {
     pub is_local: bool,
 }
 
-pub fn classify_ip_location(ip: &IpAddr) -> IpLocationInfo {
-    classify_ip_location_with_domain(ip, None)
-}
-
 pub fn classify_ip_location_with_domain(ip: &IpAddr, domain: Option<&str>) -> IpLocationInfo {
-    match ip {
-        IpAddr::V4(v4) => {
-            if v4.is_loopback() {
-                return IpLocationInfo {
-                    country_code: CountryCode::LOCAL,
-                    country: "Local Host",
-                    organization: "Loopback (127.0.0.1)",
-                    is_local: true,
-                };
-            }
-            if v4.is_private() || v4.is_link_local() || v4.is_unspecified() || v4.is_broadcast() {
-                return IpLocationInfo {
-                    country_code: CountryCode::LOCAL,
-                    country: "Local Network",
-                    organization: "Private LAN / Gateway",
-                    is_local: true,
-                };
-            }
-        }
-        IpAddr::V6(v6) => {
-            if v6.is_loopback() || v6.is_unspecified() {
-                return IpLocationInfo {
-                    country_code: CountryCode::LOCAL,
-                    country: "Local Host",
-                    organization: "IPv6 Loopback (::1)",
-                    is_local: true,
-                };
-            }
-            let seg0 = v6.segments()[0];
-            if (seg0 & 0xfe00) == 0xfc00 || (seg0 & 0xffc0) == 0xfe80 {
-                return IpLocationInfo {
-                    country_code: CountryCode::LOCAL,
-                    country: "Local Network",
-                    organization: "IPv6 Link-Local / ULA",
-                    is_local: true,
-                };
-            }
-        }
+    if !is_remote_ip(ip) {
+        let is_loopback = ip.is_loopback() || (ip.is_ipv6() && ip.is_unspecified());
+        return IpLocationInfo {
+            country_code: CountryCode::LOCAL,
+            country: if is_loopback { "Local Host" } else { "Local Network" },
+            organization: match (ip.is_ipv4(), is_loopback) {
+                (true, true) => "Loopback (127.0.0.1)",
+                (true, false) => "Private LAN / Gateway",
+                (false, true) => "IPv6 Loopback (::1)",
+                (false, false) => "IPv6 Link-Local / ULA",
+            },
+            is_local: true,
+        };
     }
 
     let domain_country = domain.and_then(infer_country_from_domain);
@@ -279,7 +251,7 @@ fn classify_ipv4_octets(octets: [u8; 4], domain_country: Option<CountryCode>) ->
             11 => CountryCode::FI,
             12 => CountryCode::BE,
             13 => CountryCode::CZ,
-            14 => CountryCode::RO_OR_HU(o1),
+            14 => CountryCode::ro_or_hu(o1),
             _ => CountryCode::UA,
         },
         // APNIC Asia-Pacific
@@ -321,9 +293,8 @@ fn classify_ipv4_octets(octets: [u8; 4], domain_country: Option<CountryCode>) ->
 }
 
 impl CountryCode {
-    #[allow(non_snake_case)]
-    fn RO_OR_HU(o1: u8) -> Self {
-        if o1 % 2 == 0 {
+    fn ro_or_hu(o1: u8) -> Self {
+        if o1.is_multiple_of(2) {
             Self(*b"RO")
         } else {
             Self(*b"HU")

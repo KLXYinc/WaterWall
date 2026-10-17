@@ -1,9 +1,9 @@
 use std::fs;
-use std::path::PathBuf;
 
 use super::Graph;
 use crate::gui::groups::{AppGroup, AppGroupManager, GLASSWIRE_PALETTE};
 use crate::gui::nodes::{Item, Link, Node, NodeKind};
+use crate::utils::graph_save_path;
 
 const MAX_UNDO_HISTORY: usize = 64;
 
@@ -43,10 +43,6 @@ impl Graph {
         }
         self.undo_stack.push(snap);
         self.redo_stack.clear();
-    }
-
-    pub fn can_undo(&self) -> bool {
-        !self.undo_stack.is_empty()
     }
 
     pub fn can_redo(&self) -> bool {
@@ -266,6 +262,20 @@ impl Graph {
                         }
                     }
                 }
+                "ITEM_SLD" if parts.len() >= 4 => {
+                    if let (Ok(nid), Ok(val)) = (parts[1].parse::<i32>(), parts[3].parse::<f32>())
+                    {
+                        if let Some(n) = nodes.iter_mut().find(|n| n.id == nid) {
+                            for it in &mut n.items {
+                                if let Item::Slider { label, value, min, max } = it {
+                                    if *label == parts[2] {
+                                        *value = val.clamp(*min, *max);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 "LINK" if parts.len() >= 4 => {
                     if let (Ok(id), Ok(from), Ok(to)) =
                         (parts[1].parse(), parts[2].parse(), parts[3].parse())
@@ -292,14 +302,6 @@ impl Graph {
         self.next_node_id = next_node_id.max(self.nodes.iter().map(|n| n.id + 1).max().unwrap_or(1));
         self.next_link_id = next_link_id.max(self.links.iter().map(|l| l.id + 1).max().unwrap_or(1));
         Some(format!("Loaded saved Flow Graph from {}", path.display()))
-    }
-}
-
-fn graph_save_path() -> PathBuf {
-    if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(format!("{}/.config/waterwall/flow_graph.cfg", home))
-    } else {
-        PathBuf::from("waterwall_graph.cfg")
     }
 }
 

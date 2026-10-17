@@ -1,9 +1,15 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::process::Command;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use super::socket::ConnectionInfo;
 
-/// Terminate active kernel network sockets using Linux socket diagnostics / ss -K / iptables
+static RECENT_DROPS: Mutex<Option<HashMap<SocketAddr, Instant>>> = Mutex::new(None);
+const DROP_COOLDOWN: Duration = Duration::from_millis(1500);
+
+/// Terminate active kernel network sockets using Linux socket diagnostics / ss -K
 pub fn terminate_sockets(connections: &[ConnectionInfo]) -> usize {
     let mut terminated = 0;
 
@@ -12,7 +18,6 @@ pub fn terminate_sockets(connections: &[ConnectionInfo]) -> usize {
             continue;
         }
 
-        // Try terminating via `ss -K` (iproute2 kernel socket destroy netlink API)
         if terminate_single_socket(&conn.remote_addr) {
             terminated += 1;
         }
@@ -21,22 +26,22 @@ pub fn terminate_sockets(connections: &[ConnectionInfo]) -> usize {
     terminated
 }
 
-/// Terminate an active TCP connection to a specific remote socket endpoint
+/// Terminate an active TCP connection to a specific remote socket endpoint (rate-limited per endpoint)
 pub fn terminate_single_socket(remote: &SocketAddr) -> bool {
-    let ip = remote.ip().to_string();
-    let port = remote.port().to_string();
-
-    // ss -K dst <ip> dport = :<port>
-    let filter = format!("dst {} dport = :{}", ip, port);
-    let output = Command::new("ss")
-        .args(["-K", &filter])
-        .output();
-
-    match output {
-        Ok(out) if out.status.success() => true,
-        _ => {
-            // Netlink direct or raw RST fallback
-            false
+    let now = Instant::now();
+    if let Ok(mut guard) = RECENT_DROPS.lock() {
+        let map = guard.get_or_insert_with(HashMap::new);
+        if let Some(&last) = map.get(remote) {
+            if now.duration_since(last) < DROP_COOLDOWN {
+                return false;
+            }
         }
+        map.retain(|_, t| now.duration_since(*t) < Duration::from_secs(10));
+        map.insert(*remote, now);
     }
+
+    let filter = format!("dst {} dport = :{}", remote.ip(), remote.port());
+    let output = Command::new("ss").args(["-K", &filter]).output();
+
+    matches!(output, Ok(out) if out.status.success())
 }

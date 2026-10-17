@@ -6,7 +6,7 @@ use super::widgets::{
     draw_app_icon_or_badge, render_shared_filter_bar, truncate_str, SharedFilterState,
 };
 use crate::net::{
-    format_bytes, format_speed, AppNetworkInfo, NetworkMonitor, HISTORY_LEN,
+    format_bytes, format_speed, AppNetworkInfo, NetworkMonitor, NetworkSnapshot, HISTORY_LEN,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -20,19 +20,18 @@ pub enum TrafficMetric {
 pub struct TrafficViewState {
     pub metric: Option<TrafficMetric>,
     pub stacked_mode: bool,
-    pub open_flow_graph: bool,
 }
 
 pub fn render_traffic_monitor_view(
     state: &mut TrafficViewState,
     filter: &mut SharedFilterState,
+    snap: &NetworkSnapshot,
     monitor: &NetworkMonitor,
     icon_manager: &mut IconManager,
     gl: &glow::Context,
     ui: &Ui,
 ) {
-    let snap = monitor.snapshot();
-    render_shared_filter_bar(filter, &snap, monitor, ui);
+    render_shared_filter_bar(filter, snap, monitor, ui);
 
     ui.spacing();
     ui.separator();
@@ -88,7 +87,7 @@ pub fn render_traffic_monitor_view(
         );
         ui.same_line();
         if ui.button(" [Flow Graph] ") {
-            state.open_flow_graph = true;
+            filter.request_flow_graph = true;
         }
     } else {
         ui.same_line_with_spacing(0.0, 14.0);
@@ -114,7 +113,7 @@ pub fn render_traffic_monitor_view(
     ui.separator();
     ui.spacing();
 
-    render_top_apps_color_list(state, filter, &ranked_apps, icon_manager, gl, ui);
+    render_top_apps_color_list(filter, &ranked_apps, icon_manager, gl, ui);
 }
 
 fn series_for_app(app: &AppNetworkInfo, metric: TrafficMetric) -> Vec<f32> {
@@ -228,8 +227,8 @@ fn draw_multi_app_colored_chart(
             }
 
             if stacked {
-                for i in 0..HISTORY_LEN {
-                    accum_prev[i] += s.get(i).copied().unwrap_or(0.0);
+                for (acc, &val) in accum_prev.iter_mut().zip(s.iter()) {
+                    *acc += val;
                 }
             }
         }
@@ -237,7 +236,7 @@ fn draw_multi_app_colored_chart(
         dl.add_text(
             [ix0 + 6.0, iy0 + 4.0],
             [0.65f32, 0.72, 0.82, 0.95],
-            &format!("Scale Peak: {}", format_speed(peak as f64)),
+            format!("Scale Peak: {}", format_speed(peak as f64)),
         );
 
         let mut lx = ix1 - 10.0;
@@ -307,7 +306,6 @@ fn draw_proportional_share_bar(ui: &Ui, top_apps: &[&AppNetworkInfo], width: f32
 }
 
 fn render_top_apps_color_list(
-    state: &mut TrafficViewState,
     filter: &mut SharedFilterState,
     ranked_apps: &[&AppNetworkInfo],
     icon_manager: &mut IconManager,
@@ -354,7 +352,7 @@ fn render_top_apps_color_list(
                 }
 
                 if ui
-                    .selectable_config(&format!("##tm_row_{}", app.pid))
+                    .selectable_config(format!("##tm_row_{}", app.pid))
                     .selected(is_sel)
                     .size([row_w, 34.0])
                     .build()
@@ -392,7 +390,7 @@ fn render_top_apps_color_list(
                         dl.add_text(
                             [row_pos[0] + spd_x, row_pos[1] + 9.0],
                             [0.65f32, 0.75, 0.86, 1.0],
-                            &format!(
+                            format!(
                                 "IN: {}   OUT: {}   ({} conns)",
                                 format_speed(app.download_speed),
                                 format_speed(app.upload_speed),
@@ -414,8 +412,8 @@ fn render_top_apps_color_list(
                         &mut filter.new_group_name_buf,
                     );
                     ui.same_line();
-                    if ui.button(&format!("Route Group in Flow Graph##tm_fg_{}", app.pid)) {
-                        state.open_flow_graph = true;
+                    if ui.button(format!("Route Group in Flow Graph##tm_fg_{}", app.pid)) {
+                        filter.request_flow_graph = true;
                     }
                 }
 

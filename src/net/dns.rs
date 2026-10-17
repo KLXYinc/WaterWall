@@ -7,6 +7,8 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Instant;
 
+use super::socket::is_remote_ip;
+
 pub const MAX_DNS_EVENTS: usize = 250;
 
 /// Live DNS resolution or query event tracked across the system
@@ -130,10 +132,6 @@ impl DnsResolver {
         }
     }
 
-    pub fn get_or_resolve(&self, ip: IpAddr) -> Option<String> {
-        self.get_or_resolve_for_app(ip, "system", "")
-    }
-
     pub fn get_or_resolve_for_app(
         &self,
         ip: IpAddr,
@@ -153,7 +151,7 @@ impl DnsResolver {
             }
         }
 
-        if is_private_ip(&ip) {
+        if !is_remote_ip(&ip) {
             return Some("lan.local".to_string());
         }
 
@@ -243,16 +241,6 @@ fn load_etc_hosts(cache: &mut HashMap<IpAddr, Option<String>>) {
                     }
                 }
             }
-        }
-    }
-}
-
-fn is_private_ip(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
-        IpAddr::V6(v6) => {
-            let s0 = v6.segments()[0];
-            (s0 & 0xfe00) == 0xfc00 || (s0 & 0xffc0) == 0xfe80
         }
     }
 }

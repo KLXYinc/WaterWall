@@ -1,7 +1,7 @@
 use imgui::node_graph as ng;
 use imgui::{Condition, StyleColor, StyleVar, Ui, WindowFlags};
 
-use super::alerts_view::{self, AlertsViewState};
+use super::alerts_view;
 use super::canvas;
 use super::graph::Graph;
 use super::icons::IconManager;
@@ -9,7 +9,7 @@ use super::monitor_view::{self, MonitorViewState};
 use super::theme;
 use super::toolbar;
 use super::traffic_view::{self, TrafficViewState};
-use super::usage_view::{self, UsageViewState};
+use super::usage_view;
 use super::widgets::SharedFilterState;
 use crate::net::NetworkMonitor;
 
@@ -29,9 +29,7 @@ pub struct WaterWallApp {
     pub monitor: NetworkMonitor,
     pub filter: SharedFilterState,
     pub monitor_state: MonitorViewState,
-    pub usage_state: UsageViewState,
     pub traffic_state: TrafficViewState,
-    pub alerts_state: AlertsViewState,
     pub icon_manager: IconManager,
     pub status: String,
     pub context_click_pos: Option<[f32; 2]>,
@@ -59,9 +57,7 @@ impl WaterWallApp {
             monitor: NetworkMonitor::new(),
             filter,
             monitor_state: MonitorViewState::default(),
-            usage_state: UsageViewState,
             traffic_state: TrafficViewState::default(),
-            alerts_state: AlertsViewState::default(),
             icon_manager: IconManager::new(),
             status,
             context_click_pos: None,
@@ -86,18 +82,17 @@ impl WaterWallApp {
             .position([0.0, 0.0], Condition::Always)
             .size(display, Condition::Always)
             .build(|| {
-                // Always synchronize Flow Graph rules, Proxy Relay, and eBPF cgroup hooks on every frame
                 let snap = self.monitor.snapshot();
                 self.graph
                     .sync_with_monitor(&snap, &self.filter.groups, &self.monitor);
 
-                toolbar::render_toolbar(self, ui);
+                toolbar::render_toolbar(self, &snap, ui);
 
                 match self.view_mode {
                     ViewMode::Usage => {
                         usage_view::render_usage_view(
-                            &mut self.usage_state,
                             &mut self.filter,
+                            &snap,
                             &self.monitor,
                             &mut self.icon_manager,
                             gl,
@@ -108,45 +103,40 @@ impl WaterWallApp {
                         traffic_view::render_traffic_monitor_view(
                             &mut self.traffic_state,
                             &mut self.filter,
+                            &snap,
                             &self.monitor,
                             &mut self.icon_manager,
                             gl,
                             ui,
                         );
-                        if self.traffic_state.open_flow_graph {
-                            self.traffic_state.open_flow_graph = false;
-                            self.view_mode = ViewMode::FlowGraph;
-                        }
                     }
                     ViewMode::Firewall => {
                         monitor_view::render_firewall_split_view(
                             &mut self.monitor_state,
                             &mut self.filter,
+                            &snap,
                             &self.monitor,
                             &mut self.icon_manager,
                             gl,
                             ui,
                         );
-                        if self.monitor_state.open_flow_graph {
-                            self.monitor_state.open_flow_graph = false;
-                            self.view_mode = ViewMode::FlowGraph;
-                        }
                     }
                     ViewMode::FlowGraph => {
-                        canvas::render_canvas(self, gl, ui);
+                        canvas::render_canvas(self, &snap, gl, ui);
                     }
                     ViewMode::DnsAndAlerts => {
                         alerts_view::render_dns_and_alerts_view(
-                            &mut self.alerts_state,
                             &mut self.filter,
+                            &snap,
                             &self.monitor,
                             ui,
                         );
-                        if self.alerts_state.open_flow_graph {
-                            self.alerts_state.open_flow_graph = false;
-                            self.view_mode = ViewMode::FlowGraph;
-                        }
                     }
+                }
+
+                if self.filter.request_flow_graph {
+                    self.filter.request_flow_graph = false;
+                    self.view_mode = ViewMode::FlowGraph;
                 }
             });
     }

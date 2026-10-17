@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::fs;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::SocketAddr;
 
 use super::socket::{Protocol, SocketState};
+use crate::utils::parse_socket_addr;
 
 pub struct ProcSocket {
     pub protocol: Protocol,
@@ -20,46 +21,6 @@ pub struct ProcessMetadata {
     pub inodes: Vec<u64>,
     pub rchar: u64,
     pub wchar: u64,
-}
-
-pub fn parse_hex_ipv4(hex_str: &str) -> Option<Ipv4Addr> {
-    if hex_str.len() != 8 {
-        return None;
-    }
-    let val = u32::from_str_radix(hex_str, 16).ok()?;
-    // Linux procfs outputs IPv4 in host endian / little endian
-    let octets = val.to_le_bytes();
-    Some(Ipv4Addr::from(octets))
-}
-
-pub fn parse_hex_ipv6(hex_str: &str) -> Option<Ipv6Addr> {
-    if hex_str.len() != 32 {
-        return None;
-    }
-    // Four 32-bit words in host endian
-    let mut octets = [0u8; 16];
-    for i in 0..4 {
-        let chunk = &hex_str[i * 8..(i + 1) * 8];
-        let word = u32::from_str_radix(chunk, 16).ok()?;
-        let word_bytes = word.to_ne_bytes();
-        octets[i * 4..(i + 1) * 4].copy_from_slice(&word_bytes);
-    }
-    Some(Ipv6Addr::from(octets))
-}
-
-pub fn parse_socket_addr(raw: &str, is_v6: bool) -> Option<SocketAddr> {
-    let mut parts = raw.split(':');
-    let ip_str = parts.next()?;
-    let port_str = parts.next()?;
-    let port = u16::from_str_radix(port_str, 16).ok()?;
-
-    if is_v6 {
-        let ip = parse_hex_ipv6(ip_str)?;
-        Some(SocketAddr::new(IpAddr::V6(ip), port))
-    } else {
-        let ip = parse_hex_ipv4(ip_str)?;
-        Some(SocketAddr::new(IpAddr::V4(ip), port))
-    }
 }
 
 pub fn parse_proc_net_file(path: &str, protocol: Protocol, is_v6: bool) -> Vec<ProcSocket> {
@@ -319,47 +280,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_hex_ipv4() {
-        // 0100007F is 127.0.0.1
-        let ip = parse_hex_ipv4("0100007F").unwrap();
-        assert_eq!(ip, Ipv4Addr::new(127, 0, 0, 1));
-
-        // 00000000 is 0.0.0.0
-        let ip_zero = parse_hex_ipv4("00000000").unwrap();
-        assert_eq!(ip_zero, Ipv4Addr::new(0, 0, 0, 0));
-    }
-
-    #[test]
-    fn test_parse_hex_ipv6() {
-        // ::1 in host-endian words representation
-        let ip = parse_hex_ipv6("00000000000000000000000001000000").unwrap();
-        assert_eq!(ip, Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1));
-    }
-
-    #[test]
-    fn test_parse_socket_addr() {
-        // 127.0.0.1:80 (80 = 0x0050)
-        let addr = parse_socket_addr("0100007F:0050", false).unwrap();
-        assert_eq!(addr.ip(), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
-        assert_eq!(addr.port(), 80);
-
-        // ::1:443 (443 = 0x01BB)
-        let addr6 = parse_socket_addr("00000000000000000000000001000000:01BB", true).unwrap();
-        assert_eq!(addr6.ip(), IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)));
-        assert_eq!(addr6.port(), 443);
-    }
-
-    #[test]
     fn test_live_socket_and_process_scan() {
         let sockets = scan_all_sockets();
-        // There should be sockets present on any running Linux desktop
         println!("Scanned {} live sockets on system", sockets.len());
 
         let procs = scan_process_metadata();
         println!("Scanned {} live processes in /proc", procs.len());
         assert!(!procs.is_empty());
 
-        // Check that current process is found
         let my_pid = std::process::id();
         assert!(procs.contains_key(&my_pid));
     }

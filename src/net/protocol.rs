@@ -74,8 +74,6 @@ impl fmt::Debug for CountryCode {
 
 impl CountryCode {
     pub const LOCAL: Self = Self(*b"LO");
-    pub const EU: Self = Self(*b"EU");
-    pub const GLOBAL: Self = Self(*b"ZZ");
     pub const US: Self = Self(*b"US");
     pub const DE: Self = Self(*b"DE");
     pub const NL: Self = Self(*b"NL");
@@ -102,10 +100,6 @@ impl CountryCode {
     pub const BR: Self = Self(*b"BR");
     pub const IN: Self = Self(*b"IN");
 
-    pub const fn from_bytes(b: [u8; 2]) -> Self {
-        Self([b[0].to_ascii_uppercase(), b[1].to_ascii_uppercase()])
-    }
-
     pub fn from_alpha2(s: &str) -> Option<Self> {
         let bytes = s.trim().as_bytes();
         if bytes.len() != 2 || !bytes[0].is_ascii_alphabetic() || !bytes[1].is_ascii_alphabetic() {
@@ -127,7 +121,7 @@ impl CountryCode {
         if *self == Self::LOCAL {
             return "LAN";
         }
-        if *self == Self::GLOBAL {
+        if &self.0 == b"ZZ" {
             return "WAN";
         }
         ISO_COUNTRIES
@@ -141,7 +135,7 @@ impl CountryCode {
         if *self == Self::LOCAL {
             return "Local Network";
         }
-        if *self == Self::GLOBAL {
+        if &self.0 == b"ZZ" {
             return "Global Internet";
         }
         ISO_COUNTRIES

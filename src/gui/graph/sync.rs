@@ -1,23 +1,23 @@
 use super::Graph;
 use crate::gui::groups::AppGroupManager;
-use crate::gui::nodes::{Item, Node, NodeKind};
+use crate::gui::nodes::NodeKind;
 use crate::net::{
-    format_bytes, format_speed, is_remote_ip, resolve_pids_for_app_names, sync_ebpf_proxied_pids,
-    terminate_single_socket, AppNetworkInfo, NetworkMonitor, NetworkSnapshot, UpstreamProxyConfig,
-    UpstreamProxyKind, HISTORY_LEN,
+    format_bytes, format_speed, is_remote_ip, sync_ebpf_for_apps, terminate_single_socket,
+    AppNetworkInfo, NetworkMonitor, NetworkSnapshot, UpstreamProxyConfig, UpstreamProxyKind,
+    HISTORY_LEN,
 };
 
 #[derive(Clone)]
-struct NodeFlowAccum {
-    has_input: bool,
-    reaches_gateway: bool,
-    speed: f64,
-    bytes: u64,
-    wan_speed: f64,
-    lan_speed: f64,
-    wan_bytes: u64,
-    lan_bytes: u64,
-    wave: Vec<f32>,
+pub(super) struct NodeFlowAccum {
+    pub(super) has_input: bool,
+    pub(super) reaches_gateway: bool,
+    pub(super) speed: f64,
+    pub(super) bytes: u64,
+    pub(super) wan_speed: f64,
+    pub(super) lan_speed: f64,
+    pub(super) wan_bytes: u64,
+    pub(super) lan_bytes: u64,
+    pub(super) wave: Vec<f32>,
 }
 
 impl Default for NodeFlowAccum {
@@ -35,6 +35,18 @@ struct ExitTraceResult {
     route_tag: Option<String>,
     visited_nodes: Vec<usize>,
     visited_links: Vec<usize>,
+}
+
+struct TraceScopeMetrics<'a> {
+    scope_prefix: &'static str,
+    is_wan: bool,
+    blocked: bool,
+    spd: f64,
+    bytes: u64,
+    socks: usize,
+    share: f32,
+    wave: &'a [f32],
+    max_sys_bytes: f32,
 }
 
 impl Graph {
@@ -164,12 +176,34 @@ impl Graph {
                 }
             }
 
-            // Accumulate flow into visited nodes for WAN and LAN paths
-            accumulate_trace(&mut node_accum, &wan_trace, !wan_blocked, true, wan_spd, wan_bytes, &combined_wave, wan_share as f32);
-            accumulate_trace(&mut node_accum, &lan_trace, !lan_blocked, false, lan_spd, lan_bytes, &combined_wave, 1.0 - wan_share as f32);
+            let wan_metrics = TraceScopeMetrics {
+                scope_prefix: "WAN",
+                is_wan: true,
+                blocked: wan_blocked,
+                spd: wan_spd,
+                bytes: wan_bytes,
+                socks: wan_socks,
+                share: wan_share as f32,
+                wave: &combined_wave,
+                max_sys_bytes,
+            };
+            let lan_metrics = TraceScopeMetrics {
+                scope_prefix: "LAN",
+                is_wan: false,
+                blocked: lan_blocked,
+                spd: lan_spd,
+                bytes: lan_bytes,
+                socks: lan_socks,
+                share: 1.0 - wan_share as f32,
+                wave: &combined_wave,
+                max_sys_bytes,
+            };
 
-            self.apply_trace_to_links(&wan_trace, wan_blocked, "WAN", wan_spd, wan_bytes, wan_socks, max_sys_bytes);
-            self.apply_trace_to_links(&lan_trace, lan_blocked, "LAN", lan_spd, lan_bytes, lan_socks, max_sys_bytes);
+            accumulate_trace(&mut node_accum, &wan_trace, &wan_metrics);
+            accumulate_trace(&mut node_accum, &lan_trace, &lan_metrics);
+
+            self.apply_trace_to_links(&wan_trace, &wan_metrics);
+            self.apply_trace_to_links(&lan_trace, &lan_metrics);
         }
 
         // 2. Sync upstream Proxy config to LocalProxyRelay & attach eBPF cgroup/connect4 to proxied PIDs
@@ -183,123 +217,10 @@ impl Graph {
         } else {
             monitor.proxy_relay.update_config(UpstreamProxyConfig::default());
         }
-        let all_proxied_pids = resolve_pids_for_app_names(&ebpf_proxied_names, &ebpf_proxied_pids);
-        let (ebpf_ok, ebpf_msg) = sync_ebpf_proxied_pids(&all_proxied_pids);
+        let ebpf_state = sync_ebpf_for_apps(&ebpf_proxied_names, &ebpf_proxied_pids);
 
         // 3. Update every non-group node strictly from its accumulated connected flow!
-        self.update_node_telemetry(snap, monitor, &node_accum, max_sys_bytes, blackhole_all, ebpf_ok, &ebpf_msg);
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn update_node_telemetry(&mut self, snap: &NetworkSnapshot, monitor: &NetworkMonitor, node_accum: &[NodeFlowAccum], max_sys_bytes: f32, blackhole_all: bool, ebpf_ok: bool, ebpf_msg: &str) {
-        let flat_wave = [0.0f32; HISTORY_LEN];
-        let idle_col = [0.52f32, 0.58, 0.68, 1.0];
-
-        for (i, acc) in node_accum.iter().enumerate() {
-            match self.nodes[i].kind {
-                NodeKind::FilterNode => {
-                    if !acc.has_input {
-                        self.nodes[i].set_readout("Status:", "DISCONNECTED".to_string(), Some(idle_col));
-                    } else {
-                        let (mode_idx, _) = self.nodes[i].combo_selected("Mode:").unwrap_or((0, ""));
-                        let ports = self.nodes[i].text_input("Ports:").unwrap_or("").trim();
-                        let host = self.nodes[i].text_input("Host:").unwrap_or("").trim();
-                        let (txt, col) = match mode_idx {
-                            2 => ("DROP ALL ON PATH".to_string(), [0.98f32, 0.35, 0.35, 1.0]),
-                            1 if !ports.is_empty() || !host.is_empty() => (format!("BLOCK {} {}", ports, host), [0.98f32, 0.78, 0.20, 1.0]),
-                            0 if !ports.is_empty() || !host.is_empty() => (format!("ALLOW {} {}", ports, host), [0.25f32, 0.92, 0.68, 1.0]),
-                            _ => (format!("PASS ({})", format_speed(acc.speed)), [0.25f32, 0.92, 0.68, 1.0]),
-                        };
-                        self.nodes[i].set_readout("Status:", txt, Some(col));
-                    }
-                }
-                NodeKind::BlockNode => {
-                    let (txt, col) = if !acc.has_input {
-                        ("IDLE (NO INPUT)", idle_col)
-                    } else {
-                        ("BLOCKING & TCP RST", [0.98f32, 0.32, 0.35, 1.0])
-                    };
-                    self.nodes[i].set_readout("Action:", txt.to_string(), Some(col));
-                }
-                NodeKind::VpnNode => {
-                    if !acc.has_input {
-                        self.nodes[i].set_readout("Status:", "DISCONNECTED".to_string(), Some(idle_col));
-                    } else {
-                        let (_, proto_name) = self.nodes[i].combo_selected("Proto:").unwrap_or((0, "WireGuard"));
-                        let iface = self.nodes[i].text_input("Iface:").unwrap_or("wg0").trim().to_string();
-                        let matched = snap.vpn_interfaces.iter().find(|v| v.name.eq_ignore_ascii_case(&iface));
-                        let status_txt = match matched {
-                            Some(v) if v.is_up => format!("UP: {} ({})", v.name, format_speed(acc.speed)),
-                            _ => format!("{} [{}] · {}", proto_name, if iface.is_empty() { "wg0" } else { &iface }, format_speed(acc.speed)),
-                        };
-                        self.nodes[i].set_readout("Status:", status_txt, Some([0.20f32, 0.90, 0.78, 1.0]));
-                    }
-                }
-                NodeKind::ProxyNode => {
-                    if !acc.has_input {
-                        self.nodes[i].set_readout("Status:", "DISCONNECTED".to_string(), Some(idle_col));
-                    } else if !ebpf_ok {
-                        self.nodes[i].set_readout(
-                            "Status:",
-                            ebpf_msg.to_string(),
-                            Some([0.98f32, 0.72, 0.22, 1.0]),
-                        );
-                    } else {
-                        let relayed = monitor.proxy_relay.relayed_connections();
-                        let srv = self.nodes[i].text_input("Server:").unwrap_or("127.0.0.1:1080").trim().to_string();
-                        let has_auth = !self.nodes[i].text_input("User:").unwrap_or("").trim().is_empty();
-                        let auth_tag = if has_auth { " [AUTH]" } else { "" };
-                        self.nodes[i].set_readout(
-                            "Status:",
-                            format!("eBPF ON ({} tunneled) · {}{}", relayed, srv, auth_tag),
-                            Some([0.22f32, 0.94, 0.72, 1.0]),
-                        );
-                    }
-                }
-                NodeKind::RateLimiter => {
-                    if !acc.has_input {
-                        self.nodes[i].set_readout("Status:", "DISCONNECTED".to_string(), Some(idle_col));
-                    } else {
-                        let cap = self.nodes[i].slider("Max Speed (KB/s)").unwrap_or(4096.0);
-                        self.nodes[i].set_readout("Status:", format!("CAP {:.0} KB/s ({})", cap, format_speed(acc.speed)), Some([0.98f32, 0.68, 0.22, 1.0]));
-                    }
-                }
-                NodeKind::TrafficMonitor => {
-                    if !acc.has_input {
-                        self.nodes[i].set_readout("State:", "DISCONNECTED".to_string(), Some(idle_col));
-                        self.nodes[i].set_data_meter("0 B/s".to_string(), "0 B".to_string(), 0.0, Some(idle_col));
-                        self.nodes[i].set_wave(&flat_wave);
-                    } else {
-                        let (st, col) = if acc.reaches_gateway {
-                            ("PROBING ACTIVE FLOW", [0.80f32, 0.55, 0.98, 1.0])
-                        } else {
-                            ("NO GATEWAY UPLINK", [0.98f32, 0.65, 0.22, 1.0])
-                        };
-                        let ratio = (acc.bytes as f32 / max_sys_bytes).max((acc.speed as f32) / (1024.0 * 1024.0 * 2.0)).clamp(0.05, 1.0);
-                        self.nodes[i].set_readout("State:", st.to_string(), Some(col));
-                        self.nodes[i].set_data_meter(format_speed(acc.speed), format_bytes(acc.bytes), ratio, Some(col));
-                        self.nodes[i].set_wave(&acc.wave);
-                    }
-                }
-                NodeKind::InternetGateway => {
-                    if !acc.has_input || blackhole_all {
-                        self.nodes[i].set_data_meter("0 B/s".to_string(), "0 B".to_string(), 0.0, Some(idle_col));
-                        self.nodes[i].set_readout(
-                            "WAN In:",
-                            if blackhole_all { "BLACKHOLE DROP".to_string() } else { "DISCONNECTED".to_string() },
-                            Some(if blackhole_all { [0.95f32, 0.30, 0.30, 1.0] } else { idle_col }),
-                        );
-                        self.nodes[i].set_readout("LAN In:", "DISCONNECTED".to_string(), Some(idle_col));
-                    } else {
-                        let ratio = (acc.bytes as f32 / max_sys_bytes).max((acc.speed as f32) / (1024.0 * 1024.0 * 2.0)).clamp(0.06, 1.0);
-                        self.nodes[i].set_data_meter(format_speed(acc.speed), format_bytes(acc.bytes), ratio, None);
-                        self.nodes[i].set_readout("WAN In:", format!("{} ({})", format_speed(acc.wan_speed), format_bytes(acc.wan_bytes)), None);
-                        self.nodes[i].set_readout("LAN In:", format!("{} ({})", format_speed(acc.lan_speed), format_bytes(acc.lan_bytes)), None);
-                    }
-                }
-                _ => {}
-            }
-        }
+        self.update_node_telemetry(snap, monitor, &node_accum, max_sys_bytes, blackhole_all, ebpf_state);
     }
 
     fn trace_exit_path(
@@ -309,10 +230,6 @@ impl Graph {
         member_apps: &[&AppNetworkInfo],
         blackhole_all: bool,
     ) -> ExitTraceResult {
-        let find_node_by_pin = |nodes: &[Node], target_pin: i32| -> Option<usize> {
-            nodes.iter().position(|n| n.items.iter().any(|it| matches!(it, Item::Pin(p) if p.id == target_pin)))
-        };
-
         let mut res = ExitTraceResult {
             reaches_gateway: false,
             blocked: blackhole_all,
@@ -336,7 +253,7 @@ impl Graph {
 
             res.visited_links.push(link_idx);
             let next_in_pin = self.links[link_idx].to;
-            let Some(next_idx) = find_node_by_pin(&self.nodes, next_in_pin) else { break };
+            let Some(next_idx) = self.find_node_by_pin(next_in_pin) else { break };
             res.visited_nodes.push(next_idx);
 
             match self.nodes[next_idx].kind {
@@ -382,35 +299,39 @@ impl Graph {
         res
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn apply_trace_to_links(
-        &mut self,
-        trace: &ExitTraceResult,
-        is_blocked: bool,
-        scope_prefix: &str,
-        spd: f64,
-        bytes: u64,
-        socks: usize,
-        max_sys_bytes: f32,
-    ) {
-        let speed_intensity = ((spd as f32) / (1024.0 * 512.0)).clamp(0.0, 0.72);
-        let vol_intensity = ((bytes as f32) / max_sys_bytes).clamp(0.10, 0.38);
-        let calc_intensity = if is_blocked { -1.0 } else { (speed_intensity + vol_intensity).clamp(0.18, 1.0) };
-
-        let badge = if is_blocked {
-            format!("{} BLOCKED", scope_prefix)
-        } else if let Some(tag) = &trace.route_tag {
-            format!("{}: {} | {}", scope_prefix, tag, format_bytes(bytes))
-        } else if spd > 0.0 {
-            format!("{}: {} | {}", scope_prefix, format_speed(spd), format_bytes(bytes))
+    fn apply_trace_to_links(&mut self, trace: &ExitTraceResult, m: &TraceScopeMetrics<'_>) {
+        let speed_intensity = ((m.spd as f32) / (1024.0 * 512.0)).clamp(0.0, 0.72);
+        let vol_intensity = ((m.bytes as f32) / m.max_sys_bytes).clamp(0.10, 0.38);
+        let calc_intensity = if m.blocked {
+            -1.0
         } else {
-            format!("{}: {} ({} conns)", scope_prefix, format_bytes(bytes), socks)
+            (speed_intensity + vol_intensity).clamp(0.18, 1.0)
+        };
+
+        let badge = if m.blocked {
+            format!("{} BLOCKED", m.scope_prefix)
+        } else if let Some(tag) = &trace.route_tag {
+            format!("{}: {} | {}", m.scope_prefix, tag, format_bytes(m.bytes))
+        } else if m.spd > 0.0 {
+            format!(
+                "{}: {} | {}",
+                m.scope_prefix,
+                format_speed(m.spd),
+                format_bytes(m.bytes)
+            )
+        } else {
+            format!(
+                "{}: {} ({} conns)",
+                m.scope_prefix,
+                format_bytes(m.bytes),
+                m.socks
+            )
         };
 
         for (hop, &l_idx) in trace.visited_links.iter().enumerate() {
             if calc_intensity < 0.0 {
                 self.links[l_idx].flow_intensity = -1.0;
-                self.links[l_idx].label = format!("{} BLOCKED", scope_prefix);
+                self.links[l_idx].label = format!("{} BLOCKED", m.scope_prefix);
             } else {
                 let prev = self.links[l_idx].flow_intensity.max(0.15);
                 self.links[l_idx].flow_intensity = prev * 0.88 + calc_intensity * 0.12;
@@ -422,34 +343,29 @@ impl Graph {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn accumulate_trace(
     node_accum: &mut [NodeFlowAccum],
     trace: &ExitTraceResult,
-    active_flow: bool,
-    is_wan: bool,
-    spd: f64,
-    bytes: u64,
-    wave: &[f32],
-    share: f32,
+    m: &TraceScopeMetrics<'_>,
 ) {
+    let active_flow = !m.blocked;
     for &n_idx in &trace.visited_nodes {
         let acc = &mut node_accum[n_idx];
         acc.has_input = true;
         acc.reaches_gateway |= trace.reaches_gateway && active_flow;
         if active_flow {
-            let eff_spd = trace.throttled_kbs.map_or(spd, |kbs| spd.min(kbs as f64 * 1024.0));
+            let eff_spd = trace.throttled_kbs.map_or(m.spd, |kbs| m.spd.min(kbs as f64 * 1024.0));
             acc.speed += eff_spd;
-            acc.bytes += bytes;
-            if is_wan {
+            acc.bytes += m.bytes;
+            if m.is_wan {
                 acc.wan_speed += eff_spd;
-                acc.wan_bytes += bytes;
+                acc.wan_bytes += m.bytes;
             } else {
                 acc.lan_speed += eff_spd;
-                acc.lan_bytes += bytes;
+                acc.lan_bytes += m.bytes;
             }
-            for (k, &v) in wave.iter().enumerate().take(HISTORY_LEN) {
-                acc.wave[k] += v * share;
+            for (k, &v) in m.wave.iter().enumerate().take(HISTORY_LEN) {
+                acc.wave[k] += v * m.share;
             }
         }
     }

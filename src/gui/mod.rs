@@ -18,4 +18,3 @@ pub mod widgets;
 pub use app::WaterWallApp;
 pub use graphics::Graphics;
 pub use icons::IconManager;
-pub use usage_view::UsageViewState;

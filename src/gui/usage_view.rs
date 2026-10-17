@@ -9,26 +9,22 @@ use super::groups::{
 use super::icons::IconManager;
 use super::widgets::{
     draw_app_icon_or_badge, draw_country_row, draw_dual_area_chart, render_shared_filter_bar,
-    truncate_str, ScopeFilter, SharedFilterState, SortMode,
+    truncate_str, SharedFilterState, SortMode,
 };
 use crate::net::{
     format_bytes, format_speed, is_remote_ip, AppNetworkInfo, CountryCode, HostRecord,
     NetworkMonitor, NetworkSnapshot, ProtocolRecord, HISTORY_LEN,
 };
 
-#[derive(Default)]
-pub struct UsageViewState;
-
 pub fn render_usage_view(
-    _state: &mut UsageViewState,
     filter: &mut SharedFilterState,
+    snapshot: &NetworkSnapshot,
     monitor: &NetworkMonitor,
     icon_manager: &mut IconManager,
     gl: &glow::Context,
     ui: &Ui,
 ) {
-    let snapshot = monitor.snapshot();
-    render_shared_filter_bar(filter, &snapshot, monitor, ui);
+    render_shared_filter_bar(filter, snapshot, monitor, ui);
     ui.spacing();
     ui.separator();
     ui.spacing();
@@ -38,7 +34,7 @@ pub fn render_usage_view(
     let left_w = 252.0;
     let col_w = ((avail[0].max(800.0) - left_w - 24.0).max(480.0) / 3.0).max(150.0);
 
-    render_left_analytics_panel(filter, &snapshot, icon_manager, gl, left_w, body_h, ui);
+    render_left_analytics_panel(filter, snapshot, icon_manager, gl, left_w, body_h, ui);
     ui.same_line();
     render_usage_apps_column(filter, &snapshot.apps, icon_manager, gl, col_w, body_h, ui);
     ui.same_line();
@@ -49,7 +45,7 @@ pub fn render_usage_view(
     ui.spacing();
     ui.separator();
     ui.spacing();
-    render_usage_bottom_graph(filter, &snapshot, ui);
+    render_usage_bottom_graph(filter, snapshot, ui);
 }
 
 fn render_left_analytics_panel(
@@ -173,14 +169,8 @@ fn render_left_analytics_panel(
 
         let mut country_map: HashMap<CountryCode, (u64, usize, u64)> = HashMap::new();
         for h in &snap.hosts {
-            if !h.matches_app(filter.selected_app.as_deref()) {
+            if !h.matches_app(filter.selected_app.as_deref()) || !filter.matches_scope(h.is_local) {
                 continue;
-            }
-            match filter.scope {
-                ScopeFilter::All => {}
-                ScopeFilter::RemoteOnly if h.is_local => continue,
-                ScopeFilter::LocalOnly if !h.is_local => continue,
-                _ => {}
             }
             let entry = country_map.entry(h.country_code).or_insert((0, 0, h.first_seen_id));
             entry.0 = entry.0.saturating_add(h.bytes_for_app(filter.selected_app.as_deref()));
@@ -190,7 +180,7 @@ fn render_left_analytics_panel(
 
         let mut countries: Vec<(CountryCode, u64, usize, u64)> =
             country_map.into_iter().map(|(cc, (b, s, id))| (cc, b, s, id)).collect();
-        countries.sort_by(|a, b| a.3.cmp(&b.3));
+        countries.sort_by_key(|a| a.3);
         let max_c_bytes = countries.iter().map(|c| c.1).max().unwrap_or(1) as f32;
 
         for (cc, bytes, sockets, _) in countries {
@@ -213,20 +203,7 @@ fn render_usage_apps_column(
 ) {
     if let Some(_child) = ui.child_window("usage_col_apps").size([width, height]).build(|| {
         let mut filtered: Vec<&AppNetworkInfo> = apps.iter().filter(|a| filter.matches_app(a)).collect();
-        match filter.sort_mode {
-            SortMode::StableOrder => filtered.sort_by(|a, b| a.first_seen_id.cmp(&b.first_seen_id)),
-            SortMode::HighestTraffic => filtered.sort_by(|a, b| {
-                let ta = (a.total_downloaded + a.total_uploaded) / (1024 * 64);
-                let tb = (b.total_downloaded + b.total_uploaded) / (1024 * 64);
-                tb.cmp(&ta).then_with(|| a.first_seen_id.cmp(&b.first_seen_id))
-            }),
-            SortMode::ActiveSockets => filtered.sort_by(|a, b| {
-                b.connections.len().cmp(&a.connections.len()).then_with(|| a.first_seen_id.cmp(&b.first_seen_id))
-            }),
-            SortMode::Alphabetical => filtered.sort_by(|a, b| {
-                a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.first_seen_id.cmp(&b.first_seen_id))
-            }),
-        }
+        filter.sort_apps(&mut filtered);
 
         ui.text_colored([0.96f32, 0.97, 0.99, 1.0], format!("Applications ({})", filtered.len()));
         ui.separator();
@@ -266,7 +243,7 @@ fn render_usage_apps_column(
                 let dl = ui.get_window_draw_list();
                 dl.add_rect([row_pos[0], row_pos[1] - 2.0], [row_pos[0] + width - 10.0, row_pos[1] + row_h - 2.0], [0.10f32, 0.45, 0.35, 0.50]).rounding(4.0).filled(true).build();
             }
-            if ui.selectable_config(&format!("##sel_usage_app_{}", app.pid)).selected(is_selected).size([width - 12.0, row_h - 4.0]).build() {
+            if ui.selectable_config(format!("##sel_usage_app_{}", app.pid)).selected(is_selected).size([width - 12.0, row_h - 4.0]).build() {
                 filter.selected_app = if is_selected { None } else { Some(app.name.clone()) };
             }
             draw_app_icon_or_badge(ui, icon_manager, gl, app, [row_pos[0] + 4.0, row_pos[1] + 3.0], 20.0);
@@ -301,9 +278,9 @@ fn render_usage_hosts_column(filter: &mut SharedFilterState, hosts: &[HostRecord
             .iter()
             .filter(|h| {
                 h.matches_app(app_filter)
-                    && !matches!((filter.scope, h.is_local), (ScopeFilter::RemoteOnly, true) | (ScopeFilter::LocalOnly, false))
-                    && filter.selected_country.map_or(true, |cc| h.country_code == cc)
-                    && filter.selected_protocol.map_or(true, |p| h.protocols.contains(&p))
+                    && filter.matches_scope(h.is_local)
+                    && filter.selected_country.is_none_or(|cc| h.country_code == cc)
+                    && filter.selected_protocol.is_none_or(|p| h.protocols.contains(&p))
             })
             .collect();
 
@@ -327,7 +304,7 @@ fn render_usage_hosts_column(filter: &mut SharedFilterState, hosts: &[HostRecord
             let bytes = item.bytes_for_app(app_filter);
             let active_socks = item.sockets_for_app(app_filter);
 
-            if ui.selectable_config(&format!("##host_row_{}", item.first_seen_id)).size([width - 12.0, row_h - 3.0]).build() {
+            if ui.selectable_config(format!("##host_row_{}", item.first_seen_id)).size([width - 12.0, row_h - 3.0]).build() {
                 filter.selected_country = if filter.selected_country == Some(item.country_code) { None } else { Some(item.country_code) };
             }
 
@@ -357,10 +334,7 @@ fn render_usage_protocols_column(filter: &mut SharedFilterState, protocols: &[Pr
         let app_filter = filter.selected_app.as_deref();
         let mut filtered: Vec<&ProtocolRecord> = protocols
             .iter()
-            .filter(|p| {
-                p.matches_app(app_filter)
-                    && !matches!((filter.scope, p.is_local), (ScopeFilter::RemoteOnly, true) | (ScopeFilter::LocalOnly, false))
-            })
+            .filter(|p| p.matches_app(app_filter) && filter.matches_scope(p.is_local))
             .collect();
 
         filtered.sort_by(|a, b| match filter.sort_mode {
@@ -383,7 +357,7 @@ fn render_usage_protocols_column(filter: &mut SharedFilterState, protocols: &[Pr
             let bytes = item.bytes_for_app(app_filter);
             let is_sel = filter.selected_protocol == Some(item.code);
 
-            if ui.selectable_config(&format!("##proto_sel_{}", item.code)).selected(is_sel).size([width - 12.0, row_h - 3.0]).build() {
+            if ui.selectable_config(format!("##proto_sel_{}", item.code)).selected(is_sel).size([width - 12.0, row_h - 3.0]).build() {
                 filter.selected_protocol = if is_sel { None } else { Some(item.code) };
             }
 
@@ -397,7 +371,7 @@ fn render_usage_protocols_column(filter: &mut SharedFilterState, protocols: &[Pr
             let desc_cut = truncate_str(item.full_desc, ((width - bw - dw - 28.0).max(40.0) / 7.0) as usize);
             dl.add_text([row_pos[0] + 12.0 + bw, row_pos[1] + 2.0], [0.95f32, 0.96, 0.99, 1.0], &desc_cut);
             dl.add_text([(row_pos[0] + width - dw - 18.0).max(row_pos[0] + 120.0), row_pos[1] + 2.0], [0.75f32, 0.80, 0.88, 1.0], &data_str);
-            dl.add_text([row_pos[0] + 6.0, row_pos[1] + 17.0], [0.52f32, 0.62, 0.74, 1.0], &format!("{} active sockets", item.sockets_for_app(app_filter)));
+            dl.add_text([row_pos[0] + 6.0, row_pos[1] + 17.0], [0.52f32, 0.62, 0.74, 1.0], format!("{} active sockets", item.sockets_for_app(app_filter)));
 
             let ratio = (bytes as f32 / max_val).clamp(0.04, 1.0);
             dl.add_rect([row_pos[0] + 6.0, row_pos[1] + row_h - 4.0], [row_pos[0] + 6.0 + (width - 24.0).max(10.0) * ratio, row_pos[1] + row_h - 2.0], item.color).filled(true).build();

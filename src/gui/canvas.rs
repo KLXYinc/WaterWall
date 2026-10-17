@@ -5,10 +5,9 @@ use super::app::WaterWallApp;
 use super::groups::{render_app_group_selector, render_group_apps_editor_popup};
 use crate::gui::nodes::NodeKind;
 use crate::gui::theme;
+use crate::net::NetworkSnapshot;
 
-pub fn render_canvas(app: &mut WaterWallApp, gl: &glow::Context, ui: &Ui) {
-    let snap = app.monitor.snapshot();
-
+pub fn render_canvas(app: &mut WaterWallApp, snap: &NetworkSnapshot, gl: &glow::Context, ui: &Ui) {
     // Keyboard shortcuts: Ctrl+Z (Undo), Ctrl+Y / Ctrl+Shift+Z (Redo), Ctrl+S (Save)
     if !ui.io().want_text_input && ui.io().key_ctrl {
         if ui.is_key_pressed(Key::Z) {
@@ -127,7 +126,7 @@ pub fn render_canvas(app: &mut WaterWallApp, gl: &glow::Context, ui: &Ui) {
         ui.separator();
         ui.menu("Isolate App into New Group Node", || {
             for net_app in snap.apps.iter().take(12) {
-                if ui.menu_item(&net_app.display_name()) {
+                if ui.menu_item(net_app.display_name()) {
                     app.graph.push_undo();
                     let gid = app
                         .filter

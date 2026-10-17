@@ -1,10 +1,6 @@
-pub mod app;
-pub mod graph;
-pub mod graphics;
 pub mod gui;
 pub mod net;
-pub mod nodes;
-pub mod theme;
+pub mod utils;
 
 use std::time::Instant;
 
@@ -164,8 +160,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let snapshot = monitor.snapshot();
 
         println!(
-            "{:<8} {:<24} {:<12} {:<12} {:<14} {:<12} {}",
-            "PID", "PROCESS", "DOWN SPEED", "UP SPEED", "TOTAL USAGE", "SOCKETS", "DESTINATIONS / DOMAINS"
+            "{:<8} {:<24} {:<12} {:<12} {:<14} {:<12} DESTINATIONS / DOMAINS",
+            "PID", "PROCESS", "DOWN SPEED", "UP SPEED", "TOTAL USAGE", "SOCKETS"
         );
         println!("{}", "-".repeat(110));
 

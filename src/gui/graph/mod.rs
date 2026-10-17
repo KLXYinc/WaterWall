@@ -1,5 +1,6 @@
 pub mod history;
 pub mod sync;
+pub mod telemetry;
 
 use imgui::node_graph as ng;
 use imgui::Ui;
@@ -68,8 +69,12 @@ impl Graph {
         self.nodes.len()
     }
 
-    pub fn link_count(&self) -> usize {
-        self.links.len()
+    pub fn find_node_by_pin(&self, pin_id: i32) -> Option<usize> {
+        self.nodes.iter().position(|n| {
+            n.items
+                .iter()
+                .any(|it| matches!(it, Item::Pin(p) if p.id == pin_id))
+        })
     }
 
     pub fn push_group_node(
@@ -126,13 +131,10 @@ impl Graph {
     /// Checks whether a pin originates from a `Local LAN` exit (either directly or through middle nodes).
     pub fn is_lan_origin_pin(&self, mut pin_id: i32) -> bool {
         for _ in 0..6 {
-            let Some(node) = self.nodes.iter().find(|n| {
-                n.items
-                    .iter()
-                    .any(|it| matches!(it, Item::Pin(p) if p.id == pin_id))
-            }) else {
+            let Some(node_idx) = self.find_node_by_pin(pin_id) else {
                 return false;
             };
+            let node = &self.nodes[node_idx];
             if node.kind == NodeKind::AppGroup {
                 return node.pin_id_nth(false, 1) == Some(pin_id);
             }
@@ -149,13 +151,17 @@ impl Graph {
 
     /// Validates whether connecting `from_pin -> to_pin` makes networking sense.
     pub fn validate_connection(&self, from_pin: i32, to_pin: i32) -> Result<(), &'static str> {
-        let Some(dst_node) = self.nodes.iter().find(|n| {
-            n.items
-                .iter()
-                .any(|it| matches!(it, Item::Pin(p) if p.id == to_pin && p.is_input))
-        }) else {
+        let Some(dst_idx) = self.find_node_by_pin(to_pin) else {
             return Err("Target pin is not a valid input");
         };
+        let dst_node = &self.nodes[dst_idx];
+        let is_input_pin = dst_node
+            .items
+            .iter()
+            .any(|it| matches!(it, Item::Pin(p) if p.id == to_pin && p.is_input));
+        if !is_input_pin {
+            return Err("Target pin is not a valid input");
+        }
 
         let is_lan = self.is_lan_origin_pin(from_pin);
 

@@ -148,7 +148,13 @@ pub fn is_remote_ip(ip: &IpAddr) -> bool {
                 && !v4.is_link_local()
                 && !v4.is_private()
         }
-        IpAddr::V6(v6) => !v6.is_loopback() && !v6.is_unspecified(),
+        IpAddr::V6(v6) => {
+            let s0 = v6.segments()[0];
+            !v6.is_loopback()
+                && !v6.is_unspecified()
+                && (s0 & 0xfe00) != 0xfc00
+                && (s0 & 0xffc0) != 0xfe80
+        }
     }
 }
 
@@ -210,100 +216,11 @@ pub fn app_category_badge(name: &str) -> (&'static str, &'static str, [f32; 4]) 
     }
 }
 
-pub fn format_bytes(bytes: u64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-    const GB: f64 = MB * 1024.0;
-
-    let b = bytes as f64;
-    if b >= GB {
-        format!("{:.2} GB", b / GB)
-    } else if b >= MB {
-        format!("{:.1} MB", b / MB)
-    } else if b >= KB {
-        format!("{:.1} KB", b / KB)
-    } else {
-        format!("{} B", bytes)
-    }
-}
-
-pub fn format_speed(bytes_per_sec: f64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-    const GB: f64 = MB * 1024.0;
-
-    if bytes_per_sec >= GB {
-        format!("{:.2} GB/s", bytes_per_sec / GB)
-    } else if bytes_per_sec >= MB {
-        format!("{:.1} MB/s", bytes_per_sec / MB)
-    } else if bytes_per_sec >= KB {
-        format!("{:.1} KB/s", bytes_per_sec / KB)
-    } else if bytes_per_sec > 0.0 {
-        format!("{:.0} B/s", bytes_per_sec)
-    } else {
-        "0 B/s".to_string()
-    }
-}
-
-pub fn well_known_port_desc(port: u16) -> &'static str {
-    match port {
-        20 | 21 => "FTP",
-        22 => "SSH",
-        23 => "Telnet",
-        25 => "SMTP",
-        53 => "DNS",
-        80 => "HTTP",
-        110 => "POP3",
-        123 => "NTP",
-        143 => "IMAP",
-        443 => "HTTPS",
-        465 => "SMTPS",
-        587 => "Submission",
-        993 => "IMAPS",
-        995 => "POP3S",
-        1194 => "OpenVPN",
-        3306 => "MySQL",
-        3389 => "RDP",
-        51820 => "WireGuard",
-        5432 => "PostgreSQL",
-        6379 => "Redis",
-        8080 => "HTTP-Alt",
-        8443 => "HTTPS-Alt",
-        9050 | 9051 => "Tor",
-        _ => "",
-    }
-}
+pub use crate::utils::{format_bytes, format_speed};
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_format_bytes() {
-        assert_eq!(format_bytes(0), "0 B");
-        assert_eq!(format_bytes(512), "512 B");
-        assert_eq!(format_bytes(1024), "1.0 KB");
-        assert_eq!(format_bytes(1048576), "1.0 MB");
-        assert_eq!(format_bytes(1073741824), "1.00 GB");
-    }
-
-    #[test]
-    fn test_format_speed() {
-        assert_eq!(format_speed(0.0), "0 B/s");
-        assert_eq!(format_speed(500.0), "500 B/s");
-        assert_eq!(format_speed(1024.0), "1.0 KB/s");
-        assert_eq!(format_speed(1572864.0), "1.5 MB/s");
-    }
-
-    #[test]
-    fn test_well_known_ports() {
-        assert_eq!(well_known_port_desc(80), "HTTP");
-        assert_eq!(well_known_port_desc(443), "HTTPS");
-        assert_eq!(well_known_port_desc(53), "DNS");
-        assert_eq!(well_known_port_desc(22), "SSH");
-        assert_eq!(well_known_port_desc(51820), "WireGuard");
-        assert_eq!(well_known_port_desc(9999), "");
-    }
 
     #[test]
     fn test_socket_state() {

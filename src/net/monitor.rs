@@ -5,7 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::dns::DnsResolver;
-use super::ebpf_redirect::lookup_orig_dst_slot;
+use super::ebpf_redirect::unmap_ebpf_addr;
 use super::proxy_relay::{LocalProxyRelay, LOCAL_RELAY_PORT};
 use super::records::{
     HostRecord, NetworkSnapshot, PersistentSessionState, ProtocolRecord, SecurityAlert, HISTORY_LEN,
@@ -127,14 +127,8 @@ impl NetworkMonitor {
                                     // Unmap eBPF-redirected sockets (127.100.<lo>.<hi>:19180) back to their real remote WAN destination!
                                     let mut remote_addr = s.remote_addr;
                                     if remote_addr.port() == LOCAL_RELAY_PORT {
-                                        if let std::net::IpAddr::V4(v4) = remote_addr.ip() {
-                                            let oct = v4.octets();
-                                            if oct[0] == 127 && oct[1] == 100 {
-                                                let slot = (oct[2] as u32) | ((oct[3] as u32) << 8);
-                                                if let Some(orig) = lookup_orig_dst_slot(slot) {
-                                                    remote_addr = std::net::SocketAddr::V4(orig);
-                                                }
-                                            }
+                                        if let Some(orig) = unmap_ebpf_addr(remote_addr) {
+                                            remote_addr = orig;
                                         }
                                     }
                                     let rport = remote_addr.port();
@@ -266,11 +260,11 @@ impl NetworkMonitor {
                     });
 
                     let mut hosts_vec: Vec<HostRecord> = state.hosts.values().cloned().collect();
-                    hosts_vec.sort_by(|a, b| a.first_seen_id.cmp(&b.first_seen_id));
+                    hosts_vec.sort_by_key(|a| a.first_seen_id);
 
                     let mut protos_vec: Vec<ProtocolRecord> =
                         state.protocols.values().cloned().collect();
-                    protos_vec.sort_by(|a, b| a.first_seen_id.cmp(&b.first_seen_id));
+                    protos_vec.sort_by_key(|a| a.first_seen_id);
 
                     let alerts_vec: Vec<SecurityAlert> = state
                         .alerts

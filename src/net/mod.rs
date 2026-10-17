@@ -13,12 +13,9 @@ pub mod socket;
 pub use dns::{DnsEvent, DnsResolver};
 pub use ebpf_redirect::{
     lookup_orig_dst_slot, request_ebpf_elevation, resolve_pids_for_app_names,
-    sync_ebpf_proxied_pids,
+    sync_ebpf_for_apps, sync_ebpf_proxied_pids, unmap_ebpf_addr,
 };
-pub use geoip::{
-    classify_ip_location, classify_ip_location_with_domain, infer_country_from_domain,
-    IpLocationInfo,
-};
+pub use geoip::{classify_ip_location_with_domain, infer_country_from_domain, IpLocationInfo};
 pub use ipc::{run_daemon_server, send_daemon_command};
 pub use killer::{terminate_single_socket, terminate_sockets};
 pub use monitor::NetworkMonitor;
@@ -32,6 +29,6 @@ pub use scanner::{
     ProcessMetadata, VpnInterfaceInfo,
 };
 pub use socket::{
-    app_category_badge, format_bytes, format_speed, is_remote_ip, well_known_port_desc,
-    AppNetworkInfo, ConnectionInfo, Protocol, SocketState,
+    app_category_badge, format_bytes, format_speed, is_remote_ip, AppNetworkInfo, ConnectionInfo,
+    Protocol, SocketState,
 };

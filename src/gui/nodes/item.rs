@@ -208,7 +208,7 @@ impl Item {
             Item::GroupAppsButton { label, clicked } => {
                 let row = prepare_row(ui, BUTTON_ROW_H);
                 let _c = ui.push_style_color(StyleColor::Button, [0.16f32, 0.24, 0.34, 0.95]);
-                if ui.button_with_size(&format!("{}##grp_apps_btn", label), [row[2], 20.0]) {
+                if ui.button_with_size(format!("{}##grp_apps_btn", label), [row[2], 20.0]) {
                     *clicked = true;
                 }
             }
@@ -218,7 +218,7 @@ impl Item {
                 ui.text_disabled(*label);
                 ui.set_cursor_screen_pos([row[0] + label_w, row[1]]);
                 ui.set_next_item_width((row[2] - label_w).max(60.0));
-                ui.input_text(&format!("##txt_{}", label), value)
+                ui.input_text(format!("##txt_{}", label), value)
                     .hint(*hint)
                     .build();
             }
@@ -234,7 +234,7 @@ impl Item {
                 let btn_w = (row[2] - label_w).max(60.0);
                 let cur_opt = options.get(*selected).copied().unwrap_or("Select");
                 let popup_id = format!("combo_pop_{}", label);
-                if ui.button_with_size(&format!("{} [v]##cb_{}", cur_opt, label), [btn_w, 19.0]) {
+                if ui.button_with_size(format!("{} [v]##cb_{}", cur_opt, label), [btn_w, 19.0]) {
                     ui.open_popup(&popup_id);
                 }
                 ui.popup(&popup_id, || {

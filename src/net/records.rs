@@ -39,6 +39,62 @@ pub struct SecurityAlert {
     pub created_at: Instant,
 }
 
+/// Shared per-application byte & socket counters used by both `HostRecord` and `ProtocolRecord`
+#[derive(Clone, Debug, Default)]
+pub struct EndpointTrafficStats {
+    pub total_bytes: u64,
+    pub app_bytes: HashMap<String, u64>,
+    pub active_sockets: usize,
+    pub app_sockets: HashMap<String, usize>,
+    pub app_names: Vec<String>,
+}
+
+impl EndpointTrafficStats {
+    pub fn new(initial_bytes: u64) -> Self {
+        Self {
+            total_bytes: initial_bytes,
+            ..Self::default()
+        }
+    }
+
+    pub fn reset_sockets(&mut self) {
+        self.active_sockets = 0;
+        self.app_sockets.clear();
+    }
+
+    pub fn record_sample(&mut self, app_key_lower: &str, app_name: &str, byte_inc: u64) {
+        self.active_sockets += 1;
+        *self.app_sockets.entry(app_key_lower.to_string()).or_insert(0) += 1;
+        self.total_bytes = self.total_bytes.saturating_add(byte_inc);
+        let entry = self.app_bytes.entry(app_key_lower.to_string()).or_insert(2048);
+        *entry = entry.saturating_add(byte_inc);
+        if !self.app_names.iter().any(|n| n.eq_ignore_ascii_case(app_name)) {
+            self.app_names.push(app_name.to_string());
+        }
+    }
+
+    pub fn bytes_for_app(&self, app_filter: Option<&str>) -> u64 {
+        match app_filter {
+            Some(app) => self.app_bytes.get(&app.to_lowercase()).copied().unwrap_or(0),
+            None => self.total_bytes,
+        }
+    }
+
+    pub fn sockets_for_app(&self, app_filter: Option<&str>) -> usize {
+        match app_filter {
+            Some(app) => self.app_sockets.get(&app.to_lowercase()).copied().unwrap_or(0),
+            None => self.active_sockets,
+        }
+    }
+
+    pub fn matches_app(&self, app_filter: Option<&str>) -> bool {
+        match app_filter {
+            Some(app) => self.app_bytes.contains_key(&app.to_lowercase()),
+            None => true,
+        }
+    }
+}
+
 /// Persistent record for a remote or local Host/IP endpoint across sampling ticks.
 #[derive(Clone, Debug)]
 pub struct HostRecord {
@@ -53,35 +109,22 @@ pub struct HostRecord {
     pub organization: &'static str,
     pub is_local: bool,
     pub is_listen: bool,
-    pub total_bytes: u64,
-    pub app_bytes: HashMap<String, u64>,
-    pub active_sockets: usize,
-    pub app_sockets: HashMap<String, usize>,
-    pub app_names: Vec<String>,
+    pub stats: EndpointTrafficStats,
     pub protocols: Vec<&'static str>,
     pub first_seen_id: u64,
 }
 
 impl HostRecord {
     pub fn bytes_for_app(&self, app_filter: Option<&str>) -> u64 {
-        match app_filter {
-            Some(app) => self.app_bytes.get(&app.to_lowercase()).copied().unwrap_or(0),
-            None => self.total_bytes,
-        }
+        self.stats.bytes_for_app(app_filter)
     }
 
     pub fn sockets_for_app(&self, app_filter: Option<&str>) -> usize {
-        match app_filter {
-            Some(app) => self.app_sockets.get(&app.to_lowercase()).copied().unwrap_or(0),
-            None => self.active_sockets,
-        }
+        self.stats.sockets_for_app(app_filter)
     }
 
     pub fn matches_app(&self, app_filter: Option<&str>) -> bool {
-        match app_filter {
-            Some(app) => self.app_bytes.contains_key(&app.to_lowercase()),
-            None => true,
-        }
+        self.stats.matches_app(app_filter)
     }
 }
 
@@ -92,35 +135,22 @@ pub struct ProtocolRecord {
     pub full_desc: &'static str,
     pub color: [f32; 4],
     pub is_local: bool,
-    pub total_bytes: u64,
-    pub app_bytes: HashMap<String, u64>,
-    pub active_sockets: usize,
-    pub app_sockets: HashMap<String, usize>,
+    pub stats: EndpointTrafficStats,
     pub ports: Vec<u16>,
-    pub app_names: Vec<String>,
     pub first_seen_id: u64,
 }
 
 impl ProtocolRecord {
     pub fn bytes_for_app(&self, app_filter: Option<&str>) -> u64 {
-        match app_filter {
-            Some(app) => self.app_bytes.get(&app.to_lowercase()).copied().unwrap_or(0),
-            None => self.total_bytes,
-        }
+        self.stats.bytes_for_app(app_filter)
     }
 
     pub fn sockets_for_app(&self, app_filter: Option<&str>) -> usize {
-        match app_filter {
-            Some(app) => self.app_sockets.get(&app.to_lowercase()).copied().unwrap_or(0),
-            None => self.active_sockets,
-        }
+        self.stats.sockets_for_app(app_filter)
     }
 
     pub fn matches_app(&self, app_filter: Option<&str>) -> bool {
-        match app_filter {
-            Some(app) => self.app_bytes.contains_key(&app.to_lowercase()),
-            None => true,
-        }
+        self.stats.matches_app(app_filter)
     }
 }
 
@@ -186,12 +216,10 @@ impl PersistentSessionState {
 
     pub fn reset_socket_counters(&mut self) {
         for host in self.hosts.values_mut() {
-            host.active_sockets = 0;
-            host.app_sockets.clear();
+            host.stats.reset_sockets();
         }
         for proto in self.protocols.values_mut() {
-            proto.active_sockets = 0;
-            proto.app_sockets.clear();
+            proto.stats.reset_sockets();
         }
     }
 
@@ -324,11 +352,7 @@ impl PersistentSessionState {
                     organization: loc.organization,
                     is_local: loc.is_local,
                     is_listen,
-                    total_bytes: 4096,
-                    app_bytes: HashMap::new(),
-                    active_sockets: 0,
-                    app_sockets: HashMap::new(),
-                    app_names: Vec::new(),
+                    stats: EndpointTrafficStats::new(4096),
                     protocols: Vec::new(),
                     first_seen_id: *next_id_ref,
                 }
@@ -346,15 +370,7 @@ impl PersistentSessionState {
             }
 
             let byte_inc = step_bytes.max(128);
-            host_entry.active_sockets += 1;
-            *host_entry.app_sockets.entry(app_key_lower.clone()).or_insert(0) += 1;
-            host_entry.total_bytes = host_entry.total_bytes.saturating_add(byte_inc);
-            let app_b = host_entry.app_bytes.entry(app_key_lower.clone()).or_insert(2048);
-            *app_b = app_b.saturating_add(byte_inc);
-
-            if !host_entry.app_names.iter().any(|n| n.eq_ignore_ascii_case(&app.name)) {
-                host_entry.app_names.push(app.name.clone());
-            }
+            host_entry.stats.record_sample(&app_key_lower, &app.name, byte_inc);
             if !host_entry.protocols.contains(&proto_code) {
                 host_entry.protocols.push(proto_code);
             }
@@ -366,27 +382,15 @@ impl PersistentSessionState {
                     full_desc,
                     color: proto_col,
                     is_local: loc.is_local,
-                    total_bytes: 4096,
-                    app_bytes: HashMap::new(),
-                    active_sockets: 0,
-                    app_sockets: HashMap::new(),
+                    stats: EndpointTrafficStats::new(4096),
                     ports: Vec::new(),
-                    app_names: Vec::new(),
                     first_seen_id: *next_id_ref,
                 }
             });
 
-            proto_entry.active_sockets += 1;
-            *proto_entry.app_sockets.entry(app_key_lower.clone()).or_insert(0) += 1;
-            proto_entry.total_bytes = proto_entry.total_bytes.saturating_add(byte_inc);
-            let p_app_b = proto_entry.app_bytes.entry(app_key_lower.clone()).or_insert(2048);
-            *p_app_b = p_app_b.saturating_add(byte_inc);
-
+            proto_entry.stats.record_sample(&app_key_lower, &app.name, byte_inc);
             if port != 0 && !proto_entry.ports.contains(&port) && proto_entry.ports.len() < 4 {
                 proto_entry.ports.push(port);
-            }
-            if !proto_entry.app_names.iter().any(|n| n.eq_ignore_ascii_case(&app.name)) {
-                proto_entry.app_names.push(app.name.clone());
             }
         }
 
