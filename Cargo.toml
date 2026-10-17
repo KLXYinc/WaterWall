@@ -1,0 +1,44 @@
+[package]
+name = "waterwall"
+version = "0.1.0"
+edition = "2021"
+description = "WaterWall — Rust GUI built on Dear ImGui (imgui-rs)"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# Dear ImGui bindings. Every UI call you write is 100% Rust.
+imgui = { version = "0.12", features = ["tables-api"] }
+# winit platform backend: window events, keyboard/mouse input, HiDPI handling.
+imgui-winit-support = "0.13"
+# renderer backend: turns ImGui draw lists into OpenGL calls.
+imgui-glow-renderer = "0.13"
+# OpenGL function loader (the 0.14 line that imgui-glow-renderer expects).
+glow = "0.14"
+# window creation + OpenGL context (EGL/GLX).
+glutin = "0.32"
+glutin-winit = "0.5"
+# native window/event handling (X11 + Wayland).
+winit = { version = "0.30", features = ["rwh_06"] }
+# raw window handle glue between winit and glutin.
+raw-window-handle = "0.6"
+libc = "0.2"
+png = "0.17"
+
+# ---------------------------------------------------------------------------
+# Your own imgui fork.
+#
+# imgui + imgui-sys are vendored into ./vendor so you can change anything:
+#   * Rust wrapper / widgets:  vendor/imgui/src/…
+#   * Dear ImGui C++ core:     vendor/imgui-sys/third-party/imgui-master/imgui/…
+# Cargo rebuilds from these paths automatically.
+# ---------------------------------------------------------------------------
+[patch.crates-io]
+imgui = { path = "vendor/imgui" }
+imgui-sys = { path = "vendor/imgui-sys" }
+
+# Debug builds: your code compiles fast, dependencies run optimized.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
